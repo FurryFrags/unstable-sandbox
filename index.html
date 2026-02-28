@@ -3,61 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nature Sandbox</title>
+    <title>Voxel Spectator Sandbox</title>
     <link rel="stylesheet" href="styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.164.1/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
-    <div class="app">
-      <header>
-        <h1>Nature Sandbox</h1>
-        <p>Minecraft-like 3D spectator camera, procedural hills, vector trees, and a day/night world clock.</p>
-      </header>
+    <canvas id="scene"></canvas>
 
-      <aside class="panel">
-        <h2>God Actions</h2>
-
-        <div class="control-group">
-          <span>Time Speed</span>
-          <div class="button-row">
-            <button class="speed-btn active" data-speed="1">1x</button>
-            <button class="speed-btn" data-speed="2">2x</button>
-            <button class="speed-btn" data-speed="5">5x</button>
-            <button class="speed-btn" data-speed="10">10x</button>
-          </div>
-        </div>
-
-        <div class="control-group">
-          <button id="spawnFood">Spawn Food Burst</button>
-          <button id="regenWorld">Regenerate World</button>
-          <button id="toggleTime">Pause Time</button>
-        </div>
-
-        <div class="stats">
-          <p><strong>Time:</strong> <span id="clock">06:00</span></p>
-          <p><strong>Cycle:</strong> <span id="cycleLabel">Dawn</span></p>
-          <p><strong>Food objects:</strong> <span id="foodCount">0</span></p>
-          <p><strong>Nature objects:</strong> <span id="objectCount">0</span></p>
-        </div>
-
-        <div class="legend">
-          <h3>Legend + Controls</h3>
-          <ul>
-            <li><span class="swatch grass"></span>Grass hills</li>
-            <li><span class="swatch dirt"></span>Stone peaks</li>
-            <li><span class="swatch water"></span>Water level</li>
-            <li><span class="swatch tree"></span>Vector tree</li>
-            <li><span class="swatch berry"></span>Food berry</li>
-            <li><strong>WASD</strong> move / <strong>Space+Shift</strong> vertical fly</li>
-            <li><strong>Mouse</strong> look (click canvas to lock) / <strong>Arrows</strong> backup look</li>
-          </ul>
-        </div>
-      </aside>
-
-      <main>
-        <canvas id="world" width="900" height="560"></canvas>
-      </main>
+    <div class="hud">
+      <h1>Voxel Spectator Sandbox</h1>
+      <p>Procedural hills + vector trees in a minecraft-like world.</p>
+      <ul>
+        <li><strong>Click</strong> to lock mouse</li>
+        <li><strong>WASD</strong> move</li>
+        <li><strong>Space / Shift</strong> fly up/down</li>
+        <li><strong>Esc</strong> unlock pointer</li>
+      </ul>
+      <p id="status">Loading world…</p>
     </div>
 
-    <script src="script.js"></script>
+    <script type="module" src="script.js"></script>
   </body>
 </html>
