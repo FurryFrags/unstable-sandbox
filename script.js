@@ -7,8 +7,8 @@ const TREE_RATE = 0.07;
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -17,7 +17,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#87b9ff');
 scene.fog = new THREE.Fog('#87b9ff', 30, 140);
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 800);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 320);
 camera.position.set(12, 18, 12);
 
 const hemiLight = new THREE.HemisphereLight('#dbefff', '#4e633f', 0.8);
@@ -26,7 +26,7 @@ scene.add(hemiLight);
 const sun = new THREE.DirectionalLight('#fff7d2', 1.1);
 sun.position.set(60, 90, 35);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(1024, 1024);
 sun.shadow.camera.left = -120;
 sun.shadow.camera.right = 120;
 sun.shadow.camera.top = 120;
@@ -64,8 +64,7 @@ function terrainHeight(x, z) {
   const broad = smoothNoise(x * 0.05, z * 0.05) * 10;
   const rolling = smoothNoise(x * 0.12 + 42, z * 0.12 + 12) * 6;
   const detail = smoothNoise(x * 0.23 + 90, z * 0.23 + 37) * 2;
-  const radial = Math.hypot(x - WORLD_SIZE * 0.5, z - WORLD_SIZE * 0.5) * 0.18;
-  return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail - radial)));
+  return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
 }
 
 function makeWorld() {
@@ -95,6 +94,14 @@ function makeWorld() {
   const trunkMat = new THREE.MeshStandardMaterial({ color: '#6b4827', roughness: 1 });
   const leafGeo = new THREE.ConeGeometry(0.9, 1.9, 7);
   const leafMat = new THREE.MeshStandardMaterial({ color: '#2f8a42', roughness: 0.9 });
+  const maxTrees = Math.ceil(WORLD_SIZE * WORLD_SIZE * TREE_RATE);
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, maxTrees);
+  const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, maxTrees);
+  trunkMesh.castShadow = true;
+  trunkMesh.receiveShadow = true;
+  leafMesh.castShadow = true;
+  leafMesh.receiveShadow = true;
+  let treeIdx = 0;
 
   for (let z = 0; z < WORLD_SIZE; z += 1) {
     for (let x = 0; x < WORLD_SIZE; x += 1) {
@@ -117,17 +124,11 @@ function makeWorld() {
 
       const seed = hash2(x * 0.7, z * 0.91);
       if (h > 5 && seed > 1 - TREE_RATE) {
-        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-        trunk.position.set(x, h + 1.0, z);
-        trunk.castShadow = true;
-        trunk.receiveShadow = true;
-        world.add(trunk);
+        matrix.makeTranslation(x, h + 1.0, z);
+        trunkMesh.setMatrixAt(treeIdx, matrix);
 
-        const leaves = new THREE.Mesh(leafGeo, leafMat);
-        leaves.position.set(x, h + 2.3, z);
-        leaves.castShadow = true;
-        leaves.receiveShadow = true;
-        world.add(leaves);
+        matrix.makeTranslation(x, h + 2.3, z);
+        leafMesh.setMatrixAt(treeIdx, matrix);
 
         treeSegments.push(
           x,
@@ -161,6 +162,8 @@ function makeWorld() {
           h + 2.95,
           z,
         );
+
+        treeIdx += 1;
       }
     }
   }
@@ -168,13 +171,20 @@ function makeWorld() {
   grassMesh.count = grassIdx;
   soilMesh.count = soilIdx;
   stoneMesh.count = stoneIdx;
+  trunkMesh.count = treeIdx;
+  leafMesh.count = treeIdx;
+
   grassMesh.instanceMatrix.needsUpdate = true;
   soilMesh.instanceMatrix.needsUpdate = true;
   stoneMesh.instanceMatrix.needsUpdate = true;
+  trunkMesh.instanceMatrix.needsUpdate = true;
+  leafMesh.instanceMatrix.needsUpdate = true;
 
   world.add(stoneMesh);
   world.add(soilMesh);
   world.add(grassMesh);
+  world.add(trunkMesh);
+  world.add(leafMesh);
 
   const water = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD_SIZE + 30, WORLD_SIZE + 30),
@@ -193,11 +203,15 @@ function makeWorld() {
   );
   world.add(vectorTree);
 
-  statusEl.textContent = `Generated ${WORLD_SIZE}x${WORLD_SIZE} world with hills + vector trees.`;
+  statusEl.textContent = `Generated ${WORLD_SIZE}x${WORLD_SIZE} world with smoother performance + continuous terrain.`;
 }
 
 const velocity = new THREE.Vector3();
 const moveInput = new THREE.Vector3();
+const forward = new THREE.Vector3();
+const right = new THREE.Vector3();
+const up = new THREE.Vector3(0, 1, 0);
+const cameraEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 let yaw = Math.PI * 0.2;
 let pitch = -0.2;
 let pointerLocked = false;
@@ -241,8 +255,8 @@ function moveCamera(dt) {
   const speed = activeKeys.has('ControlLeft') ? 34 : 18;
   velocity.copy(moveInput).multiplyScalar(speed * dt);
 
-  const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).negate();
+  forward.set(Math.sin(yaw), 0, Math.cos(yaw));
+  right.crossVectors(forward, up).negate();
 
   camera.position.addScaledVector(forward, -velocity.z);
   camera.position.addScaledVector(right, velocity.x);
@@ -264,7 +278,8 @@ function moveCamera(dt) {
   camera.position.y = THREE.MathUtils.clamp(camera.position.y, 3, 200);
   camera.position.z = THREE.MathUtils.clamp(camera.position.z, -20, WORLD_SIZE + 20);
 
-  camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  cameraEuler.set(pitch, yaw, 0);
+  camera.quaternion.setFromEuler(cameraEuler);
 }
 
 window.addEventListener('keydown', (event) => {
