@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
 const MAX_HEIGHT = 16;
+const SEA_LEVEL = 4;
 const TREE_RATE = 0.07;
 
 const canvas = document.getElementById('scene');
@@ -106,11 +107,19 @@ function makeWorld() {
   for (let z = 0; z < WORLD_SIZE; z += 1) {
     for (let x = 0; x < WORLD_SIZE; x += 1) {
       const h = terrainHeight(x, z);
+      const isSubmerged = h < SEA_LEVEL;
 
+      // Surface rendering depends on whether the column top sits below sea level.
       matrix.makeTranslation(x, h, z);
-      grassMesh.setMatrixAt(grassIdx, matrix);
-      grassIdx += 1;
+      if (isSubmerged) {
+        soilMesh.setMatrixAt(soilIdx, matrix);
+        soilIdx += 1;
+      } else {
+        grassMesh.setMatrixAt(grassIdx, matrix);
+        grassIdx += 1;
+      }
 
+      // Solid placement beneath the visible surface.
       for (let y = h - 1; y >= Math.max(1, h - 2); y -= 1) {
         matrix.makeTranslation(x, y, z);
         soilMesh.setMatrixAt(soilIdx, matrix);
@@ -188,10 +197,15 @@ function makeWorld() {
 
   const water = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD_SIZE + 30, WORLD_SIZE + 30),
-    new THREE.MeshStandardMaterial({ color: '#3e8fe3', transparent: true, opacity: 0.42 }),
+    new THREE.MeshStandardMaterial({
+      color: '#3e8fe3',
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    }),
   );
   water.rotation.x = -Math.PI * 0.5;
-  water.position.set((WORLD_SIZE - 1) * 0.5, 4.5, (WORLD_SIZE - 1) * 0.5);
+  water.position.set((WORLD_SIZE - 1) * 0.5, SEA_LEVEL + 0.5, (WORLD_SIZE - 1) * 0.5);
   water.receiveShadow = true;
   scene.add(water);
 
