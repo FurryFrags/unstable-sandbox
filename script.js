@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const WORLD_SIZE = 84;
+const WORLD_SIZE = 84 * 3;
 const MAX_HEIGHT = 16;
 const TREE_RATE = 0.07;
 
@@ -201,16 +201,40 @@ const moveInput = new THREE.Vector3();
 let yaw = Math.PI * 0.2;
 let pitch = -0.2;
 let pointerLocked = false;
+let flyMode = false;
+let verticalVelocity = 0;
+let lastSpaceDown = -Infinity;
 const activeKeys = new Set();
+
+const PLAYER_HEIGHT = 1.7;
+const JUMP_SPEED = 11;
+const GRAVITY = 30;
+const DOUBLE_TAP_MS = 260;
+
+function groundLevelAt(x, z) {
+  const tx = THREE.MathUtils.clamp(Math.round(x), 0, WORLD_SIZE - 1);
+  const tz = THREE.MathUtils.clamp(Math.round(z), 0, WORLD_SIZE - 1);
+  return terrainHeight(tx, tz) + PLAYER_HEIGHT;
+}
+
+function setModeStatus() {
+  if (pointerLocked) {
+    statusEl.textContent = flyMode
+      ? 'Fly mode ON. Move with WASD, Space up, Shift down. Double-tap Space to land mode.'
+      : 'Fly mode OFF. Move with WASD, Space jump. Double-tap Space to fly.';
+    return;
+  }
+  statusEl.textContent = 'Click the scene to re-enter spectator mode.';
+}
 
 function moveCamera(dt) {
   moveInput.set(0, 0, 0);
-  if (activeKeys.has('KeyW')) moveInput.z -= 1;
-  if (activeKeys.has('KeyS')) moveInput.z += 1;
+  if (activeKeys.has('KeyW')) moveInput.z += 1;
+  if (activeKeys.has('KeyS')) moveInput.z -= 1;
   if (activeKeys.has('KeyA')) moveInput.x -= 1;
   if (activeKeys.has('KeyD')) moveInput.x += 1;
-  if (activeKeys.has('Space')) moveInput.y += 1;
-  if (activeKeys.has('ShiftLeft') || activeKeys.has('ShiftRight')) moveInput.y -= 1;
+  if (flyMode && activeKeys.has('Space')) moveInput.y += 1;
+  if (flyMode && (activeKeys.has('ShiftLeft') || activeKeys.has('ShiftRight'))) moveInput.y -= 1;
 
   if (moveInput.lengthSq() > 0) moveInput.normalize();
 
@@ -222,16 +246,50 @@ function moveCamera(dt) {
 
   camera.position.addScaledVector(forward, -velocity.z);
   camera.position.addScaledVector(right, velocity.x);
-  camera.position.y += velocity.y;
+
+  if (flyMode) {
+    camera.position.y += velocity.y;
+    verticalVelocity = 0;
+  } else {
+    verticalVelocity -= GRAVITY * dt;
+    camera.position.y += verticalVelocity * dt;
+    const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
+    if (camera.position.y <= groundLevel) {
+      camera.position.y = groundLevel;
+      verticalVelocity = 0;
+    }
+  }
 
   camera.position.x = THREE.MathUtils.clamp(camera.position.x, -20, WORLD_SIZE + 20);
-  camera.position.y = THREE.MathUtils.clamp(camera.position.y, 3, 80);
+  camera.position.y = THREE.MathUtils.clamp(camera.position.y, 3, 200);
   camera.position.z = THREE.MathUtils.clamp(camera.position.z, -20, WORLD_SIZE + 20);
 
   camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
 }
 
-window.addEventListener('keydown', (event) => activeKeys.add(event.code));
+window.addEventListener('keydown', (event) => {
+  if (event.code === 'Space') {
+    const now = performance.now();
+    const isDoubleTap = now - lastSpaceDown <= DOUBLE_TAP_MS;
+    lastSpaceDown = now;
+
+    if (isDoubleTap) {
+      flyMode = !flyMode;
+      if (!flyMode) {
+        const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
+        camera.position.y = Math.max(camera.position.y, groundLevel);
+      }
+      verticalVelocity = 0;
+      setModeStatus();
+    } else if (!flyMode) {
+      const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
+      const isGrounded = Math.abs(camera.position.y - groundLevel) < 0.05;
+      if (isGrounded) verticalVelocity = JUMP_SPEED;
+    }
+  }
+
+  activeKeys.add(event.code);
+});
 window.addEventListener('keyup', (event) => activeKeys.delete(event.code));
 
 canvas.addEventListener('click', async () => {
@@ -242,9 +300,7 @@ canvas.addEventListener('click', async () => {
 
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = document.pointerLockElement === canvas;
-  statusEl.textContent = pointerLocked
-    ? 'Spectator mode active. Fly with WASD + Space/Shift.'
-    : 'Click the scene to re-enter spectator mode.';
+  setModeStatus();
 });
 
 document.addEventListener('mousemove', (event) => {
