@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nature Sandbox</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Nature Sandbox</h1>
+        <p>Procedural terrain, objects, food spawning, and a day/night world clock.</p>
+      </header>
+
+      <aside class="panel">
+        <h2>God Actions</h2>
+
+        <div class="control-group">
+          <span>Time Speed</span>
+          <div class="button-row">
+            <button class="speed-btn active" data-speed="1">1x</button>
+            <button class="speed-btn" data-speed="2">2x</button>
+            <button class="speed-btn" data-speed="5">5x</button>
+            <button class="speed-btn" data-speed="10">10x</button>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <button id="spawnFood">Spawn Food Burst</button>
+          <button id="regenWorld">Regenerate World</button>
+          <button id="toggleTime">Pause Time</button>
+        </div>
+
+        <div class="stats">
+          <p><strong>Time:</strong> <span id="clock">06:00</span></p>
+          <p><strong>Cycle:</strong> <span id="cycleLabel">Dawn</span></p>
+          <p><strong>Food objects:</strong> <span id="foodCount">0</span></p>
+          <p><strong>Nature objects:</strong> <span id="objectCount">0</span></p>
+        </div>
+
+        <div class="legend">
+          <h3>Legend</h3>
+          <ul>
+            <li><span class="swatch grass"></span>Grass terrain</li>
+            <li><span class="swatch dirt"></span>Dirt terrain</li>
+            <li><span class="swatch water"></span>Water terrain</li>
+            <li><span class="swatch tree"></span>Tree object</li>
+            <li><span class="swatch rock"></span>Rock object</li>
+            <li><span class="swatch berry"></span>Food berry</li>
+          </ul>
+        </div>
+      </aside>
+
+      <main>
+        <canvas id="world" width="900" height="560"></canvas>
+      </main>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
