@@ -3,7 +3,17 @@ import * as THREE from 'three';
 const WORLD_SIZE = 84 * 3;
 const MAX_HEIGHT = 16;
 const SEA_LEVEL = 4;
-const TREE_RATE = 0.07;
+
+const CHUNK_SIZE = 16;
+const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
+const RENDER_DISTANCE = 4;
+const SHADOW_CAST_DISTANCE = 2;
+const CHUNK_UNLOAD_PADDING = 1;
+
+const BLOCK_AIR = 0;
+const BLOCK_STONE = 1;
+const BLOCK_DIRT = 2;
+const BLOCK_GRASS = 3;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -27,15 +37,37 @@ scene.add(hemiLight);
 const sun = new THREE.DirectionalLight('#fff7d2', 1.1);
 sun.position.set(60, 90, 35);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
-sun.shadow.camera.left = -120;
-sun.shadow.camera.right = 120;
-sun.shadow.camera.top = 120;
-sun.shadow.camera.bottom = -120;
+sun.shadow.mapSize.set(512, 512);
+sun.shadow.camera.left = -70;
+sun.shadow.camera.right = 70;
+sun.shadow.camera.top = 70;
+sun.shadow.camera.bottom = -70;
+sun.shadow.camera.near = 10;
+sun.shadow.camera.far = 220;
 scene.add(sun);
 
 const world = new THREE.Group();
 scene.add(world);
+
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(WORLD_SIZE + 30, WORLD_SIZE + 30),
+  new THREE.MeshBasicMaterial({
+    color: '#3e8fe3',
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  }),
+);
+water.rotation.x = -Math.PI * 0.5;
+water.position.set((WORLD_SIZE - 1) * 0.5, SEA_LEVEL + 0.5, (WORLD_SIZE - 1) * 0.5);
+water.frustumCulled = false;
+scene.add(water);
+
+const materials = {
+  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9 }),
+  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1 }),
+  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95 }),
+};
 
 function fract(v) {
   return v - Math.floor(v);
@@ -68,156 +100,258 @@ function terrainHeight(x, z) {
   return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
 }
 
-function makeWorld() {
-  const grassMat = new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95 });
-  const dirtMat = new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1 });
-  const stoneMat = new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9 });
+function getVoxelTypeAt(wx, y, wz) {
+  if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
+  const h = terrainHeight(wx, wz);
+  if (y > h) return BLOCK_AIR;
+  if (y === h) return h < SEA_LEVEL ? BLOCK_DIRT : BLOCK_GRASS;
+  if (y >= h - 2) return BLOCK_DIRT;
+  return BLOCK_STONE;
+}
 
-  const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
-  const grassMesh = new THREE.InstancedMesh(cubeGeo, grassMat, WORLD_SIZE * WORLD_SIZE);
-  const soilMesh = new THREE.InstancedMesh(cubeGeo, dirtMat, WORLD_SIZE * WORLD_SIZE * 2);
-  const stoneMesh = new THREE.InstancedMesh(cubeGeo, stoneMat, WORLD_SIZE * WORLD_SIZE);
+function buildChunkVoxelData(cx, cz) {
+  const sizeY = MAX_HEIGHT + 1;
+  const voxels = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * sizeY);
+  const minX = cx * CHUNK_SIZE;
+  const minZ = cz * CHUNK_SIZE;
 
-  grassMesh.castShadow = true;
-  grassMesh.receiveShadow = true;
-  soilMesh.castShadow = true;
-  soilMesh.receiveShadow = true;
-  stoneMesh.castShadow = true;
-  stoneMesh.receiveShadow = true;
+  const voxelIndex = (lx, y, lz) => lx + lz * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
 
-  const matrix = new THREE.Matrix4();
-  let grassIdx = 0;
-  let soilIdx = 0;
-  let stoneIdx = 0;
+  for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
+      const wx = minX + lx;
+      const wz = minZ + lz;
+      for (let y = 0; y <= MAX_HEIGHT; y += 1) {
+        voxels[voxelIndex(lx, y, lz)] = getVoxelTypeAt(wx, y, wz);
+      }
+    }
+  }
+  return voxels;
+}
 
-  const treeSegments = [];
-  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.22, 1.3, 6);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: '#6b4827', roughness: 1 });
-  const leafGeo = new THREE.ConeGeometry(0.9, 1.9, 7);
-  const leafMat = new THREE.MeshStandardMaterial({ color: '#2f8a42', roughness: 0.9 });
-  const maxTrees = Math.ceil(WORLD_SIZE * WORLD_SIZE * TREE_RATE);
-  const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, maxTrees);
-  const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, maxTrees);
-  trunkMesh.castShadow = true;
-  trunkMesh.receiveShadow = true;
-  leafMesh.castShadow = true;
-  leafMesh.receiveShadow = true;
-  let treeIdx = 0;
+function pushQuad(positions, normals, indices, corners, normal) {
+  const base = positions.length / 3;
+  for (const corner of corners) {
+    positions.push(corner[0], corner[1], corner[2]);
+    normals.push(normal[0], normal[1], normal[2]);
+  }
+  indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
 
-  for (let z = 0; z < WORLD_SIZE; z += 1) {
-    for (let x = 0; x < WORLD_SIZE; x += 1) {
-      const h = terrainHeight(x, z);
-      const isSubmerged = h < SEA_LEVEL;
+function buildMaterialGreedyGeometry(voxels, materialType) {
+  const dims = [CHUNK_SIZE, MAX_HEIGHT + 1, CHUNK_SIZE];
+  const positions = [];
+  const normals = [];
+  const indices = [];
 
-      // Surface rendering depends on whether the column top sits below sea level.
-      matrix.makeTranslation(x, h, z);
-      if (isSubmerged) {
-        soilMesh.setMatrixAt(soilIdx, matrix);
-        soilIdx += 1;
-      } else {
-        grassMesh.setMatrixAt(grassIdx, matrix);
-        grassIdx += 1;
+  const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
+  const voxelAt = (x, y, z) => {
+    if (x < 0 || y < 0 || z < 0 || x >= dims[0] || y >= dims[1] || z >= dims[2]) return BLOCK_AIR;
+    return voxels[index(x, y, z)];
+  };
+
+  const mask = new Int8Array(Math.max(dims[0] * dims[1], dims[1] * dims[2], dims[0] * dims[2]));
+
+  for (let d = 0; d < 3; d += 1) {
+    const u = (d + 1) % 3;
+    const v = (d + 2) % 3;
+    const q = [0, 0, 0];
+    q[d] = 1;
+    const x = [0, 0, 0];
+    const du = [0, 0, 0];
+    const dv = [0, 0, 0];
+
+    const width = dims[u];
+    const height = dims[v];
+
+    for (x[d] = -1; x[d] < dims[d]; x[d] += 1) {
+      let n = 0;
+      for (x[v] = 0; x[v] < dims[v]; x[v] += 1) {
+        for (x[u] = 0; x[u] < dims[u]; x[u] += 1) {
+          const a = x[d] >= 0 ? voxelAt(x[0], x[1], x[2]) : BLOCK_AIR;
+          const b = x[d] < dims[d] - 1 ? voxelAt(x[0] + q[0], x[1] + q[1], x[2] + q[2]) : BLOCK_AIR;
+
+          if (a === materialType && b === BLOCK_AIR) {
+            mask[n] = 1;
+          } else if (b === materialType && a === BLOCK_AIR) {
+            mask[n] = -1;
+          } else {
+            mask[n] = 0;
+          }
+          n += 1;
+        }
       }
 
-      // Solid placement beneath the visible surface.
-      for (let y = h - 1; y >= Math.max(1, h - 2); y -= 1) {
-        matrix.makeTranslation(x, y, z);
-        soilMesh.setMatrixAt(soilIdx, matrix);
-        soilIdx += 1;
-      }
+      n = 0;
+      for (let j = 0; j < height; j += 1) {
+        for (let i = 0; i < width; ) {
+          const c = mask[n];
+          if (!c) {
+            i += 1;
+            n += 1;
+            continue;
+          }
 
-      const bedrock = Math.max(0, h - 3);
-      matrix.makeTranslation(x, bedrock, z);
-      stoneMesh.setMatrixAt(stoneIdx, matrix);
-      stoneIdx += 1;
+          let w = 1;
+          while (i + w < width && mask[n + w] === c) w += 1;
 
-      const seed = hash2(x * 0.7, z * 0.91);
-      if (h > 5 && seed > 1 - TREE_RATE) {
-        matrix.makeTranslation(x, h + 1.0, z);
-        trunkMesh.setMatrixAt(treeIdx, matrix);
+          let h = 1;
+          outer: while (j + h < height) {
+            for (let k = 0; k < w; k += 1) {
+              if (mask[n + k + h * width] !== c) break outer;
+            }
+            h += 1;
+          }
 
-        matrix.makeTranslation(x, h + 2.3, z);
-        leafMesh.setMatrixAt(treeIdx, matrix);
+          x[u] = i;
+          x[v] = j;
+          du[0] = 0;
+          du[1] = 0;
+          du[2] = 0;
+          dv[0] = 0;
+          dv[1] = 0;
+          dv[2] = 0;
+          du[u] = w;
+          dv[v] = h;
 
-        treeSegments.push(
-          x,
-          h + 0.3,
-          z,
-          x,
-          h + 3.1,
-          z,
-          x - 0.9,
-          h + 2.2,
-          z,
-          x,
-          h + 2.95,
-          z,
-          x + 0.9,
-          h + 2.2,
-          z,
-          x,
-          h + 2.95,
-          z,
-          x,
-          h + 2.2,
-          z - 0.9,
-          x,
-          h + 2.95,
-          z,
-          x,
-          h + 2.2,
-          z + 0.9,
-          x,
-          h + 2.95,
-          z,
-        );
+          const side = c > 0 ? 1 : -1;
+          const normal = [0, 0, 0];
+          normal[d] = side;
 
-        treeIdx += 1;
+          const origin = [x[0], x[1], x[2]];
+          if (c < 0) {
+            origin[0] += q[0];
+            origin[1] += q[1];
+            origin[2] += q[2];
+          }
+
+          const p0 = [origin[0], origin[1], origin[2]];
+          const p1 = [origin[0] + du[0], origin[1] + du[1], origin[2] + du[2]];
+          const p2 = [origin[0] + du[0] + dv[0], origin[1] + du[1] + dv[1], origin[2] + du[2] + dv[2]];
+          const p3 = [origin[0] + dv[0], origin[1] + dv[1], origin[2] + dv[2]];
+
+          if (c > 0) {
+            pushQuad(positions, normals, indices, [p0, p3, p2, p1], normal);
+          } else {
+            pushQuad(positions, normals, indices, [p0, p1, p2, p3], normal);
+          }
+
+          for (let l = 0; l < h; l += 1) {
+            for (let k = 0; k < w; k += 1) {
+              mask[n + k + l * width] = 0;
+            }
+          }
+
+          i += w;
+          n += w;
+        }
       }
     }
   }
 
-  grassMesh.count = grassIdx;
-  soilMesh.count = soilIdx;
-  stoneMesh.count = stoneIdx;
-  trunkMesh.count = treeIdx;
-  leafMesh.count = treeIdx;
+  if (!positions.length) return null;
 
-  grassMesh.instanceMatrix.needsUpdate = true;
-  soilMesh.instanceMatrix.needsUpdate = true;
-  stoneMesh.instanceMatrix.needsUpdate = true;
-  trunkMesh.instanceMatrix.needsUpdate = true;
-  leafMesh.instanceMatrix.needsUpdate = true;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  geometry.computeBoundingBox();
+  return geometry;
+}
 
-  world.add(stoneMesh);
-  world.add(soilMesh);
-  world.add(grassMesh);
-  world.add(trunkMesh);
-  world.add(leafMesh);
+class ChunkManager {
+  constructor(root) {
+    this.root = root;
+    this.chunks = new Map();
+    this.frustum = new THREE.Frustum();
+    this.projectionView = new THREE.Matrix4();
+  }
 
-  const water = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD_SIZE + 30, WORLD_SIZE + 30),
-    new THREE.MeshStandardMaterial({
-      color: '#3e8fe3',
-      transparent: true,
-      opacity: 0.42,
-      depthWrite: false,
-    }),
-  );
-  water.rotation.x = -Math.PI * 0.5;
-  water.position.set((WORLD_SIZE - 1) * 0.5, SEA_LEVEL + 0.5, (WORLD_SIZE - 1) * 0.5);
-  water.receiveShadow = true;
-  scene.add(water);
+  key(cx, cz) {
+    return `${cx},${cz}`;
+  }
 
-  const vectorGeo = new THREE.BufferGeometry();
-  vectorGeo.setAttribute('position', new THREE.Float32BufferAttribute(treeSegments, 3));
-  const vectorTree = new THREE.LineSegments(
-    vectorGeo,
-    new THREE.LineBasicMaterial({ color: '#9df8ab', transparent: true, opacity: 0.5 }),
-  );
-  world.add(vectorTree);
+  inWorld(cx, cz) {
+    return cx >= 0 && cz >= 0 && cx < WORLD_CHUNKS && cz < WORLD_CHUNKS;
+  }
 
-  statusEl.textContent = `Generated ${WORLD_SIZE}x${WORLD_SIZE} world with smoother performance + continuous terrain.`;
+  buildChunk(cx, cz) {
+    const key = this.key(cx, cz);
+    if (this.chunks.has(key) || !this.inWorld(cx, cz)) return;
+
+    const voxels = buildChunkVoxelData(cx, cz);
+    const group = new THREE.Group();
+    group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
+
+    const meshes = [];
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS]) {
+      const geometry = buildMaterialGreedyGeometry(voxels, type);
+      if (!geometry) continue;
+      const mesh = new THREE.Mesh(geometry, materials[type]);
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.frustumCulled = true;
+      group.add(mesh);
+      meshes.push(mesh);
+    }
+
+    const bounds = new THREE.Box3(
+      new THREE.Vector3(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE),
+      new THREE.Vector3((cx + 1) * CHUNK_SIZE, MAX_HEIGHT + 1, (cz + 1) * CHUNK_SIZE),
+    );
+
+    this.chunks.set(key, { cx, cz, group, meshes, bounds });
+    this.root.add(group);
+  }
+
+  unloadChunk(chunk) {
+    this.root.remove(chunk.group);
+    for (const mesh of chunk.meshes) {
+      mesh.geometry.dispose();
+    }
+  }
+
+  update(camera) {
+    const camChunkX = Math.floor(camera.position.x / CHUNK_SIZE);
+    const camChunkZ = Math.floor(camera.position.z / CHUNK_SIZE);
+
+    for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz += 1) {
+      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx += 1) {
+        this.buildChunk(camChunkX + dx, camChunkZ + dz);
+      }
+    }
+
+    this.projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.projectionView);
+
+    for (const [key, chunk] of this.chunks) {
+      const dx = chunk.cx - camChunkX;
+      const dz = chunk.cz - camChunkZ;
+      const maxDistance = RENDER_DISTANCE + CHUNK_UNLOAD_PADDING;
+      if (Math.abs(dx) > maxDistance || Math.abs(dz) > maxDistance) {
+        this.unloadChunk(chunk);
+        this.chunks.delete(key);
+        continue;
+      }
+
+      const visible = this.frustum.intersectsBox(chunk.bounds);
+      chunk.group.visible = visible;
+
+      const castShadow = Math.max(Math.abs(dx), Math.abs(dz)) <= SHADOW_CAST_DISTANCE;
+      for (const mesh of chunk.meshes) {
+        mesh.castShadow = castShadow;
+      }
+    }
+
+    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: ${RENDER_DISTANCE} | Greedy meshing active.`;
+  }
+}
+
+const chunkManager = new ChunkManager(world);
+
+function makeWorld() {
+  chunkManager.update(camera);
 }
 
 const velocity = new THREE.Vector3();
@@ -357,6 +491,7 @@ function tick(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
   moveCamera(dt);
+  chunkManager.update(camera);
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
