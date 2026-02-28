@@ -14,6 +14,8 @@ const BLOCK_AIR = 0;
 const BLOCK_STONE = 1;
 const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
+const BLOCK_WOOD = 4;
+const BLOCK_LEAF = 5;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -64,9 +66,11 @@ water.frustumCulled = false;
 scene.add(water);
 
 const materials = {
-  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9 }),
-  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1 }),
-  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95 }),
+  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9, side: THREE.DoubleSide }),
+  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1, side: THREE.DoubleSide }),
+  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95, side: THREE.DoubleSide }),
+  [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ color: '#7b5534', roughness: 0.95, side: THREE.DoubleSide }),
+  [BLOCK_LEAF]: new THREE.MeshStandardMaterial({ color: '#3f8f3f', roughness: 0.9, side: THREE.DoubleSide }),
 };
 
 function fract(v) {
@@ -100,9 +104,70 @@ function terrainHeight(x, z) {
   return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
 }
 
+function isTreeCenter(wx, wz) {
+  if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
+  if (wx % 6 !== 0 || wz % 6 !== 0) return false;
+
+  const centerHeight = terrainHeight(wx, wz);
+  if (centerHeight <= SEA_LEVEL + 1) return false;
+
+  const north = terrainHeight(wx, wz - 1);
+  const south = terrainHeight(wx, wz + 1);
+  const east = terrainHeight(wx + 1, wz);
+  const west = terrainHeight(wx - 1, wz);
+  if (Math.max(
+    Math.abs(centerHeight - north),
+    Math.abs(centerHeight - south),
+    Math.abs(centerHeight - east),
+    Math.abs(centerHeight - west),
+  ) > 2) {
+    return false;
+  }
+
+  return hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > 0.52;
+}
+
+function treeBlockAt(wx, y, wz) {
+  const minTreeX = Math.floor((wx - 2) / 6) * 6;
+  const maxTreeX = Math.ceil((wx + 2) / 6) * 6;
+  const minTreeZ = Math.floor((wz - 2) / 6) * 6;
+  const maxTreeZ = Math.ceil((wz + 2) / 6) * 6;
+
+  for (let tx = minTreeX; tx <= maxTreeX; tx += 6) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += 6) {
+      if (!isTreeCenter(tx, tz)) continue;
+
+      const trunkBaseY = terrainHeight(tx, tz) + 1;
+      const trunkHeight = 4 + Math.floor(hash2(tx + 91.7, tz + 17.3) * 2);
+      const trunkTopY = trunkBaseY + trunkHeight - 1;
+
+      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
+        return BLOCK_WOOD;
+      }
+
+      const dx = Math.abs(wx - tx);
+      const dz = Math.abs(wz - tz);
+      const leafBottom = trunkTopY - 2;
+      const leafTop = trunkTopY + 1;
+      const isInLeafLayer = y >= leafBottom && y <= leafTop;
+      const isInCanopy = dx <= 2 && dz <= 2 && dx + dz <= 3;
+      const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
+      if (isInLeafLayer && isInCanopy && !isTrunkCore) {
+        return BLOCK_LEAF;
+      }
+    }
+  }
+
+  return BLOCK_AIR;
+}
+
 function getVoxelTypeAt(wx, y, wz) {
   if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
   const h = terrainHeight(wx, wz);
+
+  const treeBlock = treeBlockAt(wx, y, wz);
+  if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
+
   if (y > h) return BLOCK_AIR;
   if (y === h) return h < SEA_LEVEL ? BLOCK_DIRT : BLOCK_GRASS;
   if (y >= h - 2) return BLOCK_DIRT;
@@ -285,7 +350,7 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS]) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF]) {
       const geometry = buildMaterialGreedyGeometry(voxels, type);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
