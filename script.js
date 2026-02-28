@@ -283,7 +283,14 @@ function moveCamera(dt) {
 }
 
 window.addEventListener('keydown', (event) => {
-  if (event.code === 'Space') {
+  activeKeys.add(event.code);
+
+  const isInitialKeydown = !event.repeat;
+  const shouldIgnoreTapLogic = (code) => code === 'Space' && !isInitialKeydown;
+
+  if (shouldIgnoreTapLogic(event.code)) return;
+
+  if (event.code === 'Space' && isInitialKeydown) {
     const now = performance.now();
     const isDoubleTap = now - lastSpaceDown <= DOUBLE_TAP_MS;
     lastSpaceDown = now;
@@ -302,8 +309,6 @@ window.addEventListener('keydown', (event) => {
       if (isGrounded) verticalVelocity = JUMP_SPEED;
     }
   }
-
-  activeKeys.add(event.code);
 });
 window.addEventListener('keyup', (event) => activeKeys.delete(event.code));
 
