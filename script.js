@@ -14,8 +14,6 @@ const BLOCK_AIR = 0;
 const BLOCK_STONE = 1;
 const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
-const BLOCK_WOOD = 4;
-const BLOCK_LEAVES = 5;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -65,43 +63,10 @@ water.position.set((WORLD_SIZE - 1) * 0.5, SEA_LEVEL + 0.5, (WORLD_SIZE - 1) * 0
 water.frustumCulled = false;
 scene.add(water);
 
-function makePixelTexture(drawPixel) {
-  const size = 16;
-  const canvasTexture = document.createElement('canvas');
-  canvasTexture.width = size;
-  canvasTexture.height = size;
-  const ctx = canvasTexture.getContext('2d');
-
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      ctx.fillStyle = drawPixel(x, y);
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-
-  const texture = new THREE.CanvasTexture(canvasTexture);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  return texture;
-}
-
-const blockTextures = {
-  [BLOCK_STONE]: makePixelTexture((x, y) => ((x * 7 + y * 13) % 9 < 4 ? '#77808a' : '#8a93a0')),
-  [BLOCK_DIRT]: makePixelTexture((x, y) => ((x + y * 3) % 8 < 3 ? '#6e4c31' : '#7f5939')),
-  [BLOCK_GRASS]: makePixelTexture((x, y) => ((x * 5 + y * 11) % 8 < 3 ? '#4d9a37' : '#63b54b')),
-  [BLOCK_WOOD]: makePixelTexture((x, y) => ((x + y * 2) % 6 < 2 ? '#8d633f' : '#765236')),
-  [BLOCK_LEAVES]: makePixelTexture((x, y) => ((x * 3 + y * 5) % 7 < 2 ? '#3f8533' : '#4d9a3f')),
-};
-
 const materials = {
-  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ map: blockTextures[BLOCK_STONE], roughness: 0.92 }),
-  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ map: blockTextures[BLOCK_DIRT], roughness: 1 }),
-  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ map: blockTextures[BLOCK_GRASS], roughness: 0.95 }),
-  [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ map: blockTextures[BLOCK_WOOD], roughness: 0.96 }),
-  [BLOCK_LEAVES]: new THREE.MeshStandardMaterial({ map: blockTextures[BLOCK_LEAVES], roughness: 0.9 }),
+  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9 }),
+  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1 }),
+  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95 }),
 };
 
 function fract(v) {
@@ -135,60 +100,11 @@ function terrainHeight(x, z) {
   return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
 }
 
-function isTreeAnchor(wx, wz) {
-  if (wx < 2 || wz < 2 || wx >= WORLD_SIZE - 2 || wz >= WORLD_SIZE - 2) return false;
-  const h = terrainHeight(wx, wz);
-  if (h <= SEA_LEVEL + 1 || h >= MAX_HEIGHT - 5) return false;
-
-  const local = hash2(wx * 0.31 + 19, wz * 0.31 + 47);
-  if (local < 0.84) return false;
-
-  for (let dz = -1; dz <= 1; dz += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
-      if (dx === 0 && dz === 0) continue;
-      const nearby = hash2((wx + dx) * 0.31 + 19, (wz + dz) * 0.31 + 47);
-      if (nearby >= local) return false;
-    }
-  }
-
-  return true;
-}
-
-function treeVoxelAt(wx, y, wz) {
-  for (let az = wz - 2; az <= wz + 2; az += 1) {
-    for (let ax = wx - 2; ax <= wx + 2; ax += 1) {
-      if (!isTreeAnchor(ax, az)) continue;
-
-      const base = terrainHeight(ax, az);
-      const trunkHeight = 4 + Math.floor(hash2(ax * 0.9 + 7, az * 0.9 + 11) * 2);
-      const top = base + trunkHeight;
-
-      if (wx === ax && wz === az && y > base && y <= top) return BLOCK_WOOD;
-
-      const canopyBase = top - 1;
-      const canopyTop = top + 2;
-      if (y < canopyBase || y > canopyTop) continue;
-
-      const dx = Math.abs(wx - ax);
-      const dz = Math.abs(wz - az);
-      const layer = y - canopyBase;
-      const radius = layer < 2 ? 2 : layer === 2 ? 1 : 0;
-      if (Math.max(dx, dz) <= radius) {
-        const cutCorners = radius === 2 && dx === 2 && dz === 2;
-        if (!cutCorners) return BLOCK_LEAVES;
-      }
-    }
-  }
-
-  return BLOCK_AIR;
-}
-
 function getVoxelTypeAt(wx, y, wz) {
   if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
   const h = terrainHeight(wx, wz);
-  if (y > h) return treeVoxelAt(wx, y, wz);
+  if (y > h) return BLOCK_AIR;
   if (y === h) return h < SEA_LEVEL ? BLOCK_DIRT : BLOCK_GRASS;
-  if (treeVoxelAt(wx, y, wz) === BLOCK_WOOD) return BLOCK_WOOD;
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
 }
@@ -213,19 +129,12 @@ function buildChunkVoxelData(cx, cz) {
   return voxels;
 }
 
-function pushQuad(positions, normals, uvs, indices, corners, normal, uSpan, vSpan) {
+function pushQuad(positions, normals, indices, corners, normal) {
   const base = positions.length / 3;
-  const quadUVs = [
-    [0, 0],
-    [0, vSpan],
-    [uSpan, vSpan],
-    [uSpan, 0],
-  ];
   for (const corner of corners) {
     positions.push(corner[0], corner[1], corner[2]);
     normals.push(normal[0], normal[1], normal[2]);
   }
-  for (const uv of quadUVs) uvs.push(uv[0], uv[1]);
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
@@ -233,7 +142,6 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
   const dims = [CHUNK_SIZE, MAX_HEIGHT + 1, CHUNK_SIZE];
   const positions = [];
   const normals = [];
-  const uvs = [];
   const indices = [];
 
   const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
@@ -323,9 +231,9 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
           const p3 = [origin[0] + dv[0], origin[1] + dv[1], origin[2] + dv[2]];
 
           if (c > 0) {
-            pushQuad(positions, normals, uvs, indices, [p0, p3, p2, p1], normal, w, h);
+            pushQuad(positions, normals, indices, [p0, p3, p2, p1], normal);
           } else {
-            pushQuad(positions, normals, uvs, indices, [p0, p1, p2, p3], normal, w, h);
+            pushQuad(positions, normals, indices, [p0, p1, p2, p3], normal);
           }
 
           for (let l = 0; l < h; l += 1) {
@@ -346,7 +254,6 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   geometry.computeBoundingBox();
@@ -378,7 +285,7 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAVES]) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS]) {
       const geometry = buildMaterialGreedyGeometry(voxels, type);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
