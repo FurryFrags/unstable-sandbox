@@ -3,13 +3,11 @@ import * as THREE from 'three';
 const WORLD_SIZE = 84 * 9;
 const MAX_HEIGHT = Math.round(16 * 1.3);
 const OCEAN_LEVEL = 8;
-const RIVER_LEVEL = 6;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = 6;
+const RENDER_DISTANCE = WORLD_CHUNKS;
 const SHADOW_CAST_DISTANCE = 2;
-const CHUNK_UNLOAD_PADDING = 1;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 const FLY_SPEED_MULTIPLIER = 3;
 
@@ -28,7 +26,6 @@ const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
 const TREE_LEAF_CHANCE = 0.2;
 const TREE_APPLE_CHANCE = 0.08;
-const APPLE_REGROWTH_INTERVAL_MS = 12000;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -42,7 +39,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#87b9ff');
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 320);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, WORLD_SIZE * 3);
 camera.position.set(12, 18, 12);
 
 const hemiLight = new THREE.HemisphereLight('#dbefff', '#4e633f', 0.8);
@@ -150,10 +147,16 @@ function getWaterHeightCached(x, z) {
   const h = terrainHeight(clampedX, clampedZ);
   const continental = smoothNoise(clampedX * 0.016 + 80, clampedZ * 0.016 + 11);
   const deepOceanSignal = smoothNoise(clampedX * 0.01 + 25, clampedZ * 0.01 + 91);
-  const lakeSignal = smoothNoise(clampedX * 0.08 + 44, clampedZ * 0.08 + 59);
-  const riverField = smoothNoise(clampedX * 0.05 + 132, clampedZ * 0.05 + 73);
-  const riverFieldWarp = smoothNoise(clampedX * 0.11 + 211, clampedZ * 0.11 + 151);
-  const riverDistance = Math.abs(riverField - riverFieldWarp);
+  const craterSignal = smoothNoise(clampedX * 0.07 + 44, clampedZ * 0.07 + 59);
+
+  const neighbors = [
+    terrainHeight(Math.max(0, clampedX - 1), clampedZ),
+    terrainHeight(Math.min(WORLD_SIZE - 1, clampedX + 1), clampedZ),
+    terrainHeight(clampedX, Math.max(0, clampedZ - 1)),
+    terrainHeight(clampedX, Math.min(WORLD_SIZE - 1, clampedZ + 1)),
+  ];
+  const avgNeighborHeight = neighbors.reduce((sum, value) => sum + value, 0) / neighbors.length;
+  const basinDepth = avgNeighborHeight - h;
 
   let computedWaterHeight = -1;
 
@@ -162,13 +165,13 @@ function getWaterHeightCached(x, z) {
     computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.44 - oceanBlend) * 4));
   }
 
-  if (riverDistance < 0.06 && h <= MAX_HEIGHT - 2) {
-    computedWaterHeight = Math.max(computedWaterHeight, Math.max(h, RIVER_LEVEL));
-  }
-
-  if (lakeSignal < 0.2 && h >= RIVER_LEVEL - 1 && h <= MAX_HEIGHT - 1) {
-    const lakeDepth = Math.round((0.2 - lakeSignal) * 10);
-    computedWaterHeight = Math.max(computedWaterHeight, h + Math.min(4, Math.max(1, lakeDepth)));
+  const maxCraterWaterHeight = OCEAN_LEVEL + 4;
+  if (h <= maxCraterWaterHeight && basinDepth > 0.9 && craterSignal < 0.3) {
+    const craterDepth = Math.round((0.3 - craterSignal) * 8);
+    computedWaterHeight = Math.max(
+      computedWaterHeight,
+      Math.max(h, Math.min(maxCraterWaterHeight, h + Math.min(3, Math.max(1, craterDepth)))),
+    );
   }
 
   const encodedHeight = computedWaterHeight < 0 ? 0 : computedWaterHeight + 1;
@@ -248,10 +251,9 @@ function treeBlockAt(wx, y, wz) {
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
       const isApplePoint = y === leafBottom && (dx + dz === TREE_CANOPY_RADIUS + 1 || (dx === TREE_CANOPY_RADIUS && dz === TREE_CANOPY_RADIUS));
       if (isApplePoint) {
-        const growthCycle = Math.floor(performance.now() / APPLE_REGROWTH_INTERVAL_MS);
         const hasApple = hash2(
-          wx * 0.69 + y * 0.21 + 13.5 + growthCycle * 1.17,
-          wz * 0.94 + y * 0.53 + 44.1 + growthCycle * 0.73,
+          wx * 0.69 + y * 0.21 + 13.5,
+          wz * 0.94 + y * 0.53 + 44.1,
         ) < TREE_APPLE_CHANCE;
         if (hasApple) {
           return BLOCK_APPLE;
@@ -495,13 +497,6 @@ class ChunkManager {
     for (const [key, chunk] of this.chunks) {
       const dx = chunk.cx - camChunkX;
       const dz = chunk.cz - camChunkZ;
-      const maxDistance = RENDER_DISTANCE + CHUNK_UNLOAD_PADDING;
-      if (Math.abs(dx) > maxDistance || Math.abs(dz) > maxDistance) {
-        this.unloadChunk(chunk);
-        this.chunks.delete(key);
-        continue;
-      }
-
       const visible = this.frustum.intersectsBox(chunk.bounds);
       chunk.group.visible = visible;
 
@@ -511,7 +506,7 @@ class ChunkManager {
       }
     }
 
-    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: ${RENDER_DISTANCE} | Full block-face meshing active.`;
+    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: infinite | Full block-face meshing active.`;
   }
 }
 
@@ -655,16 +650,9 @@ window.addEventListener('resize', () => {
 makeWorld();
 
 let lastTime = performance.now();
-let lastAppleGrowthCycle = Math.floor(lastTime / APPLE_REGROWTH_INTERVAL_MS);
 function tick(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
-
-  const appleGrowthCycle = Math.floor(now / APPLE_REGROWTH_INTERVAL_MS);
-  if (appleGrowthCycle !== lastAppleGrowthCycle) {
-    lastAppleGrowthCycle = appleGrowthCycle;
-    chunkManager.unloadAllChunks();
-  }
 
   moveCamera(dt);
   chunkManager.update(camera);
