@@ -9,6 +9,7 @@ const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
 const RENDER_DISTANCE = 4;
 const SHADOW_CAST_DISTANCE = 2;
 const CHUNK_UNLOAD_PADDING = 1;
+const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 1;
@@ -73,6 +74,29 @@ const materials = {
   [BLOCK_LEAF]: new THREE.MeshStandardMaterial({ color: '#3f8f3f', roughness: 0.9, side: THREE.DoubleSide }),
 };
 
+const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
+const treeCenterCache = new Map();
+
+function worldColumnIndex(x, z) {
+  return x + z * WORLD_SIZE;
+}
+
+function getTerrainHeightCached(x, z) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = terrainHeightCache[cacheIndex];
+  if (cached >= 0) return cached;
+
+  const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
+  const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
+  const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
+  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  terrainHeightCache[cacheIndex] = height;
+  return height;
+}
+
+
 function fract(v) {
   return v - Math.floor(v);
 }
@@ -98,10 +122,74 @@ function smoothNoise(x, z) {
 }
 
 function terrainHeight(x, z) {
-  const broad = smoothNoise(x * 0.05, z * 0.05) * 10;
-  const rolling = smoothNoise(x * 0.12 + 42, z * 0.12 + 12) * 6;
-  const detail = smoothNoise(x * 0.23 + 90, z * 0.23 + 37) * 2;
-  return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  return getTerrainHeightCached(x, z);
+}
+
+function isTreeCenter(wx, wz) {
+  if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
+  if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
+
+  const cacheKey = `${wx},${wz}`;
+  if (treeCenterCache.has(cacheKey)) return treeCenterCache.get(cacheKey);
+
+  const centerHeight = terrainHeight(wx, wz);
+  if (centerHeight <= SEA_LEVEL + 1) {
+    treeCenterCache.set(cacheKey, false);
+    return false;
+  }
+
+  const north = terrainHeight(wx, wz - 1);
+  const south = terrainHeight(wx, wz + 1);
+  const east = terrainHeight(wx + 1, wz);
+  const west = terrainHeight(wx - 1, wz);
+  const isSteep = Math.max(
+    Math.abs(centerHeight - north),
+    Math.abs(centerHeight - south),
+    Math.abs(centerHeight - east),
+    Math.abs(centerHeight - west),
+  ) > 2;
+  if (isSteep) {
+    treeCenterCache.set(cacheKey, false);
+    return false;
+  }
+
+  const result = hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > TREE_DENSITY_THRESHOLD;
+  treeCenterCache.set(cacheKey, result);
+  return result;
+}
+
+function treeBlockAt(wx, y, wz) {
+  const minTreeX = Math.floor((wx - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const maxTreeX = Math.ceil((wx + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const minTreeZ = Math.floor((wz - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const maxTreeZ = Math.ceil((wz + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+
+  for (let tx = minTreeX; tx <= maxTreeX; tx += TREE_SPACING) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += TREE_SPACING) {
+      if (!isTreeCenter(tx, tz)) continue;
+
+      const trunkBaseY = terrainHeight(tx, tz) + 1;
+      const trunkHeight = 4 + Math.floor(hash2(tx + 91.7, tz + 17.3) * 2);
+      const trunkTopY = trunkBaseY + trunkHeight - 1;
+
+      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
+        return BLOCK_WOOD;
+      }
+
+      const dx = Math.abs(wx - tx);
+      const dz = Math.abs(wz - tz);
+      const leafBottom = trunkTopY - 2;
+      const leafTop = trunkTopY + 1;
+      const isInLeafLayer = y >= leafBottom && y <= leafTop;
+      const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
+      const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
+      if (isInLeafLayer && isInCanopy && !isTrunkCore) {
+        return BLOCK_LEAF;
+      }
+    }
+  }
+
+  return BLOCK_AIR;
 }
 
 function isTreeCenter(wx, wz) {
@@ -258,6 +346,8 @@ class ChunkManager {
     this.chunks = new Map();
     this.frustum = new THREE.Frustum();
     this.projectionView = new THREE.Matrix4();
+    this.pendingBuildQueue = [];
+    this.pendingBuildSet = new Set();
   }
 
   key(cx, cz) {
@@ -266,6 +356,30 @@ class ChunkManager {
 
   inWorld(cx, cz) {
     return cx >= 0 && cz >= 0 && cx < WORLD_CHUNKS && cz < WORLD_CHUNKS;
+  }
+
+
+  enqueueChunkBuild(cx, cz, camChunkX, camChunkZ) {
+    const key = this.key(cx, cz);
+    if (this.chunks.has(key) || this.pendingBuildSet.has(key) || !this.inWorld(cx, cz)) return;
+    const distance = Math.max(Math.abs(cx - camChunkX), Math.abs(cz - camChunkZ));
+    this.pendingBuildQueue.push({ cx, cz, key, distance });
+    this.pendingBuildSet.add(key);
+  }
+
+  processChunkBuildQueue() {
+    if (!this.pendingBuildQueue.length) return;
+    this.pendingBuildQueue.sort((a, b) => a.distance - b.distance);
+
+    let built = 0;
+    while (built < MAX_CHUNK_BUILDS_PER_FRAME && this.pendingBuildQueue.length) {
+      const next = this.pendingBuildQueue.shift();
+      this.pendingBuildSet.delete(next.key);
+      if (!this.chunks.has(next.key)) {
+        this.buildChunk(next.cx, next.cz);
+        built += 1;
+      }
+    }
   }
 
   buildChunk(cx, cz) {
@@ -310,9 +424,11 @@ class ChunkManager {
 
     for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz += 1) {
       for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx += 1) {
-        this.buildChunk(camChunkX + dx, camChunkZ + dz);
+        this.enqueueChunkBuild(camChunkX + dx, camChunkZ + dz, camChunkX, camChunkZ);
       }
     }
+
+    this.processChunkBuildQueue();
 
     this.projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
