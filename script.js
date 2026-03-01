@@ -28,6 +28,7 @@ const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
 const TREE_LEAF_CHANCE = 0.2;
 const TREE_APPLE_CHANCE = 0.08;
+const APPLE_REGROWTH_INTERVAL_MS = 12000;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -247,7 +248,11 @@ function treeBlockAt(wx, y, wz) {
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
       const isApplePoint = y === leafBottom && (dx + dz === TREE_CANOPY_RADIUS + 1 || (dx === TREE_CANOPY_RADIUS && dz === TREE_CANOPY_RADIUS));
       if (isApplePoint) {
-        const hasApple = hash2(wx * 0.69 + y * 0.21 + 13.5, wz * 0.94 + y * 0.53 + 44.1) < TREE_APPLE_CHANCE;
+        const growthCycle = Math.floor(performance.now() / APPLE_REGROWTH_INTERVAL_MS);
+        const hasApple = hash2(
+          wx * 0.69 + y * 0.21 + 13.5 + growthCycle * 1.17,
+          wz * 0.94 + y * 0.53 + 44.1 + growthCycle * 0.73,
+        ) < TREE_APPLE_CHANCE;
         if (hasApple) {
           return BLOCK_APPLE;
         }
@@ -311,15 +316,35 @@ function pushQuad(positions, normals, indices, corners, normal) {
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
-function buildMaterialGreedyGeometry(voxels, materialType) {
+function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOriginZ) {
   const positions = [];
   const normals = [];
   const indices = [];
 
   const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
   const voxelAt = (x, y, z) => {
-    if (x < 0 || y < 0 || z < 0 || x >= CHUNK_SIZE || y > MAX_HEIGHT || z >= CHUNK_SIZE) return BLOCK_AIR;
+    if (y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
+    if (x < 0 || z < 0 || x >= CHUNK_SIZE || z >= CHUNK_SIZE) {
+      const wx = chunkOriginX + x;
+      const wz = chunkOriginZ + z;
+      return getVoxelTypeAt(wx, y, wz);
+    }
     return voxels[index(x, y, z)];
+  };
+
+  const isWaterAdjacent = (x, y, z) => {
+    const adjacent = [
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ];
+    for (const [dx, dy, dz] of adjacent) {
+      if (voxelAt(x + dx, y + dy, z + dz) === BLOCK_WATER) return true;
+    }
+    return false;
   };
 
   const faces = [
@@ -335,12 +360,13 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
     for (let z = 0; z < CHUNK_SIZE; z += 1) {
       for (let x = 0; x < CHUNK_SIZE; x += 1) {
         if (voxelAt(x, y, z) !== materialType) continue;
+        const shouldForceAllFaces = materialType !== BLOCK_WATER && isWaterAdjacent(x, y, z);
 
         for (const face of faces) {
           const nx = x + face.neighbor[0];
           const ny = y + face.neighbor[1];
           const nz = z + face.neighbor[2];
-          if (voxelAt(nx, ny, nz) !== BLOCK_AIR) continue;
+          if (!shouldForceAllFaces && voxelAt(nx, ny, nz) !== BLOCK_AIR) continue;
 
           const corners = face.corners.map(([cx, cy, cz]) => [x + cx, y + cy, z + cz]);
           pushQuad(positions, normals, indices, corners, face.normal);
@@ -410,11 +436,13 @@ class ChunkManager {
 
     const voxels = buildChunkVoxelData(cx, cz);
     const group = new THREE.Group();
-    group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
+    const chunkOriginX = cx * CHUNK_SIZE;
+    const chunkOriginZ = cz * CHUNK_SIZE;
+    group.position.set(chunkOriginX, 0, chunkOriginZ);
 
     const meshes = [];
     for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE]) {
-      const geometry = buildMaterialGreedyGeometry(voxels, type);
+      const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
       mesh.receiveShadow = false;
@@ -438,6 +466,15 @@ class ChunkManager {
     for (const mesh of chunk.meshes) {
       mesh.geometry.dispose();
     }
+  }
+
+  unloadAllChunks() {
+    for (const chunk of this.chunks.values()) {
+      this.unloadChunk(chunk);
+    }
+    this.chunks.clear();
+    this.pendingBuildQueue.length = 0;
+    this.pendingBuildSet.clear();
   }
 
   update(camera) {
@@ -618,9 +655,17 @@ window.addEventListener('resize', () => {
 makeWorld();
 
 let lastTime = performance.now();
+let lastAppleGrowthCycle = Math.floor(lastTime / APPLE_REGROWTH_INTERVAL_MS);
 function tick(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
+
+  const appleGrowthCycle = Math.floor(now / APPLE_REGROWTH_INTERVAL_MS);
+  if (appleGrowthCycle !== lastAppleGrowthCycle) {
+    lastAppleGrowthCycle = appleGrowthCycle;
+    chunkManager.unloadAllChunks();
+  }
+
   moveCamera(dt);
   chunkManager.update(camera);
   renderer.render(scene, camera);
