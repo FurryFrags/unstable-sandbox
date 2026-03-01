@@ -54,6 +54,13 @@ sun.shadow.camera.near = 10;
 sun.shadow.camera.far = 220;
 scene.add(sun);
 
+const sunVisual = new THREE.Mesh(
+  new THREE.SphereGeometry(6, 20, 20),
+  new THREE.MeshBasicMaterial({ color: '#ffe78a' }),
+);
+sunVisual.position.set(115, 105, -60);
+scene.add(sunVisual);
+
 const world = new THREE.Group();
 scene.add(world);
 
@@ -179,6 +186,10 @@ function treeBlockAt(wx, y, wz) {
 
       if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
         return BLOCK_WOOD;
+      }
+
+      if (wx === tx && wz === tz && y === trunkTopY + 1) {
+        return BLOCK_LEAF;
       }
 
       const dx = Math.abs(wx - tx);
