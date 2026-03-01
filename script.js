@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
-const MAX_HEIGHT = 16 * 3;
+const MAX_HEIGHT = Math.round(16 * 1.3);
 const SEA_LEVEL = 4;
 
 const CHUNK_SIZE = 16;
@@ -17,10 +17,6 @@ const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
 const BLOCK_WOOD = 4;
 const BLOCK_LEAF = 5;
-
-const TREE_SPACING = 14;
-const TREE_CANOPY_RADIUS = 2;
-const TREE_DENSITY_THRESHOLD = 0.92;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -71,11 +67,11 @@ water.frustumCulled = false;
 scene.add(water);
 
 const materials = {
-  [BLOCK_STONE]: new THREE.MeshLambertMaterial({ color: '#7f858f', side: THREE.FrontSide }),
-  [BLOCK_DIRT]: new THREE.MeshLambertMaterial({ color: '#805d3b', side: THREE.FrontSide }),
-  [BLOCK_GRASS]: new THREE.MeshLambertMaterial({ color: '#58a83f', side: THREE.FrontSide }),
-  [BLOCK_WOOD]: new THREE.MeshLambertMaterial({ color: '#7b5534', side: THREE.FrontSide }),
-  [BLOCK_LEAF]: new THREE.MeshLambertMaterial({ color: '#3f8f3f', side: THREE.FrontSide }),
+  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9, side: THREE.DoubleSide }),
+  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1, side: THREE.DoubleSide }),
+  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95, side: THREE.DoubleSide }),
+  [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ color: '#7b5534', roughness: 0.95, side: THREE.DoubleSide }),
+  [BLOCK_LEAF]: new THREE.MeshStandardMaterial({ color: '#3f8f3f', roughness: 0.9, side: THREE.DoubleSide }),
 };
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
@@ -196,6 +192,63 @@ function treeBlockAt(wx, y, wz) {
   return BLOCK_AIR;
 }
 
+function isTreeCenter(wx, wz) {
+  if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
+  if (wx % 6 !== 0 || wz % 6 !== 0) return false;
+
+  const centerHeight = terrainHeight(wx, wz);
+  if (centerHeight <= SEA_LEVEL + 1) return false;
+
+  const north = terrainHeight(wx, wz - 1);
+  const south = terrainHeight(wx, wz + 1);
+  const east = terrainHeight(wx + 1, wz);
+  const west = terrainHeight(wx - 1, wz);
+  if (Math.max(
+    Math.abs(centerHeight - north),
+    Math.abs(centerHeight - south),
+    Math.abs(centerHeight - east),
+    Math.abs(centerHeight - west),
+  ) > 2) {
+    return false;
+  }
+
+  return hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > 0.52;
+}
+
+function treeBlockAt(wx, y, wz) {
+  const minTreeX = Math.floor((wx - 2) / 6) * 6;
+  const maxTreeX = Math.ceil((wx + 2) / 6) * 6;
+  const minTreeZ = Math.floor((wz - 2) / 6) * 6;
+  const maxTreeZ = Math.ceil((wz + 2) / 6) * 6;
+
+  for (let tx = minTreeX; tx <= maxTreeX; tx += 6) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += 6) {
+      if (!isTreeCenter(tx, tz)) continue;
+
+      const trunkBaseY = terrainHeight(tx, tz) + 1;
+      const trunkHeight = 4 + Math.floor(hash2(tx + 91.7, tz + 17.3) * 2);
+      const trunkTopY = trunkBaseY + trunkHeight - 1;
+
+      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
+        return BLOCK_WOOD;
+      }
+
+      const dx = Math.abs(wx - tx);
+      const dz = Math.abs(wz - tz);
+      const leafBottom = trunkTopY - 2;
+      const leafTop = trunkTopY + 1;
+      const isInLeafLayer = y >= leafBottom && y <= leafTop;
+      const isInCanopy = dx <= 2 && dz <= 2 && dx + dz <= 3;
+      const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
+      if (isInLeafLayer && isInCanopy && !isTrunkCore) {
+        return BLOCK_LEAF;
+      }
+    }
+  }
+
+  return BLOCK_AIR;
+}
+
 function getVoxelTypeAt(wx, y, wz) {
   if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
   const h = terrainHeight(wx, wz);
@@ -238,11 +291,10 @@ function pushQuad(positions, normals, indices, corners, normal) {
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
-function buildChunkMaterialGeometries(voxels) {
-  const buffers = new Map();
-  for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF]) {
-    buffers.set(type, { positions: [], normals: [], indices: [] });
-  }
+function buildMaterialGreedyGeometry(voxels, materialType) {
+  const positions = [];
+  const normals = [];
+  const indices = [];
 
   const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
   const voxelAt = (x, y, z) => {
@@ -262,10 +314,8 @@ function buildChunkMaterialGeometries(voxels) {
   for (let y = 0; y <= MAX_HEIGHT; y += 1) {
     for (let z = 0; z < CHUNK_SIZE; z += 1) {
       for (let x = 0; x < CHUNK_SIZE; x += 1) {
-        const blockType = voxelAt(x, y, z);
-        if (blockType === BLOCK_AIR) continue;
+        if (voxelAt(x, y, z) !== materialType) continue;
 
-        const buffer = buffers.get(blockType);
         for (const face of faces) {
           const nx = x + face.neighbor[0];
           const ny = y + face.neighbor[1];
@@ -273,7 +323,7 @@ function buildChunkMaterialGeometries(voxels) {
           if (voxelAt(nx, ny, nz) !== BLOCK_AIR) continue;
 
           const corners = face.corners.map(([cx, cy, cz]) => [x + cx, y + cy, z + cz]);
-          pushQuad(buffer.positions, buffer.normals, buffer.indices, corners, face.normal);
+          pushQuad(positions, normals, indices, corners, face.normal);
         }
       }
     }
@@ -346,8 +396,9 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    const geometries = buildChunkMaterialGeometries(voxels);
-    for (const [type, geometry] of geometries) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF]) {
+      const geometry = buildMaterialGreedyGeometry(voxels, type);
+      if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
       mesh.receiveShadow = false;
       mesh.castShadow = false;
@@ -406,7 +457,7 @@ class ChunkManager {
       }
     }
 
-    statusEl.textContent = `Chunks: ${this.chunks.size} | Pending: ${this.pendingBuildQueue.length} | Render radius: ${RENDER_DISTANCE} | Optimized chunk streaming + meshing active.`;
+    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: ${RENDER_DISTANCE} | Full block-face meshing active.`;
   }
 }
 
