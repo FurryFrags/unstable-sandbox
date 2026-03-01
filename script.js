@@ -37,6 +37,20 @@ const CAVE_MIN_Y = 3;
 const CAVE_SCALE = 0.16;
 const CAVE_THRESHOLD = 0.78;
 
+const DEFAULT_WORLD_GEN_PROFILE = Object.freeze({
+  oceanLevel: OCEAN_LEVEL,
+  treeSpacing: TREE_SPACING,
+  treeCanopyRadius: TREE_CANOPY_RADIUS,
+  treeDensityThreshold: TREE_DENSITY_THRESHOLD,
+  treeLeafChance: TREE_LEAF_CHANCE,
+  treeAppleChance: TREE_APPLE_CHANCE,
+  sandWaterRadius: SAND_WATER_RADIUS,
+  mountainHeightThreshold: MOUNTAIN_HEIGHT_THRESHOLD,
+  caveMinY: CAVE_MIN_Y,
+  caveScale: CAVE_SCALE,
+  caveThreshold: CAVE_THRESHOLD,
+});
+
 const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
 const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
 
@@ -112,6 +126,9 @@ let mapContextPoint = null;
 let mapStaticLayerMini = null;
 let mapStaticLayerFull = null;
 let lastMiniMapDrawAt = 0;
+let activeWorldGenProfile = DEFAULT_WORLD_GEN_PROFILE;
+
+const tmpLookDirection = new THREE.Vector3();
 
 const MINI_MAP_FPS = 18;
 
@@ -194,6 +211,13 @@ function resetWorldCaches() {
   treeCenterCache.clear();
 }
 
+function getWorldGenProfile(worldData) {
+  return {
+    ...DEFAULT_WORLD_GEN_PROFILE,
+    ...(worldData?.generation || {}),
+  };
+}
+
 function worldColumnIndex(x, z) {
   return x + z * WORLD_SIZE;
 }
@@ -267,11 +291,11 @@ function getWaterHeightCached(x, z) {
 
   let computedWaterHeight = -1;
   const oceanBlend = deepOceanSignal * 0.65 + continental * 0.35;
-  if (oceanBlend < 0.44 && h <= OCEAN_LEVEL + 3) {
-    computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.44 - oceanBlend) * 4));
+  if (oceanBlend < 0.44 && h <= activeWorldGenProfile.oceanLevel + 3) {
+    computedWaterHeight = Math.max(h, activeWorldGenProfile.oceanLevel + Math.round((0.44 - oceanBlend) * 4));
   }
 
-  const maxCraterWaterHeight = OCEAN_LEVEL + 4;
+  const maxCraterWaterHeight = activeWorldGenProfile.oceanLevel + 4;
   if (h <= maxCraterWaterHeight && basinDepth > 0.9 && craterSignal < 0.3) {
     const craterDepth = Math.round((0.3 - craterSignal) * 8);
     computedWaterHeight = Math.max(computedWaterHeight, Math.max(h, Math.min(maxCraterWaterHeight, h + Math.min(3, Math.max(1, craterDepth)))));
@@ -343,14 +367,14 @@ function biomeAt(x, z) {
 
 function isTreeCenter(wx, wz) {
   if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
-  if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
+  if (wx % activeWorldGenProfile.treeSpacing !== 0 || wz % activeWorldGenProfile.treeSpacing !== 0) return false;
 
   const cacheKey = `${wx},${wz}`;
   if (treeCenterCache.has(cacheKey)) return treeCenterCache.get(cacheKey);
 
   const centerHeight = terrainHeight(wx, wz);
   const biome = biomeAt(wx, wz);
-  if (centerHeight <= OCEAN_LEVEL + 1 || hasWaterAt(wx, wz)) {
+  if (centerHeight <= activeWorldGenProfile.oceanLevel + 1 || hasWaterAt(wx, wz)) {
     treeCenterCache.set(cacheKey, false);
     return false;
   }
@@ -374,20 +398,20 @@ function isTreeCenter(wx, wz) {
     return false;
   }
 
-  const treeDensityThreshold = biome === BIOME_SNOW ? 0.9 : TREE_DENSITY_THRESHOLD;
+  const treeDensityThreshold = biome === BIOME_SNOW ? 0.9 : activeWorldGenProfile.treeDensityThreshold;
   const result = hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > treeDensityThreshold;
   treeCenterCache.set(cacheKey, result);
   return result;
 }
 
 function treeBlockAt(wx, y, wz) {
-  const minTreeX = Math.floor((wx - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const maxTreeX = Math.ceil((wx + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const minTreeZ = Math.floor((wz - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const maxTreeZ = Math.ceil((wz + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const minTreeX = Math.floor((wx - activeWorldGenProfile.treeCanopyRadius) / activeWorldGenProfile.treeSpacing) * activeWorldGenProfile.treeSpacing;
+  const maxTreeX = Math.ceil((wx + activeWorldGenProfile.treeCanopyRadius) / activeWorldGenProfile.treeSpacing) * activeWorldGenProfile.treeSpacing;
+  const minTreeZ = Math.floor((wz - activeWorldGenProfile.treeCanopyRadius) / activeWorldGenProfile.treeSpacing) * activeWorldGenProfile.treeSpacing;
+  const maxTreeZ = Math.ceil((wz + activeWorldGenProfile.treeCanopyRadius) / activeWorldGenProfile.treeSpacing) * activeWorldGenProfile.treeSpacing;
 
-  for (let tx = minTreeX; tx <= maxTreeX; tx += TREE_SPACING) {
-    for (let tz = minTreeZ; tz <= maxTreeZ; tz += TREE_SPACING) {
+  for (let tx = minTreeX; tx <= maxTreeX; tx += activeWorldGenProfile.treeSpacing) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += activeWorldGenProfile.treeSpacing) {
       if (!isTreeCenter(tx, tz)) continue;
 
       const trunkBaseY = terrainHeight(tx, tz) + 1;
@@ -402,15 +426,15 @@ function treeBlockAt(wx, y, wz) {
       const leafBottom = trunkTopY - 1;
       const leafTop = trunkTopY;
       const isInLeafLayer = y >= leafBottom && y <= leafTop;
-      const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
+      const isInCanopy = dx <= activeWorldGenProfile.treeCanopyRadius && dz <= activeWorldGenProfile.treeCanopyRadius && dx + dz <= activeWorldGenProfile.treeCanopyRadius + 1;
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
-      const isApplePoint = y === leafBottom && (dx + dz === TREE_CANOPY_RADIUS + 1 || (dx === TREE_CANOPY_RADIUS && dz === TREE_CANOPY_RADIUS));
+      const isApplePoint = y === leafBottom && (dx + dz === activeWorldGenProfile.treeCanopyRadius + 1 || (dx === activeWorldGenProfile.treeCanopyRadius && dz === activeWorldGenProfile.treeCanopyRadius));
       if (isApplePoint) {
-        const hasApple = hash2(wx * 0.69 + y * 0.21 + 13.5, wz * 0.94 + y * 0.53 + 44.1) < TREE_APPLE_CHANCE;
+        const hasApple = hash2(wx * 0.69 + y * 0.21 + 13.5, wz * 0.94 + y * 0.53 + 44.1) < activeWorldGenProfile.treeAppleChance;
         if (hasApple) return BLOCK_APPLE;
       }
 
-      const hasLeaf = hash2(wx * 1.91 + y * 0.47 + 31.7, wz * 1.37 + y * 0.73 + 19.3) < TREE_LEAF_CHANCE;
+      const hasLeaf = hash2(wx * 1.91 + y * 0.47 + 31.7, wz * 1.37 + y * 0.73 + 19.3) < activeWorldGenProfile.treeLeafChance;
       if (isInLeafLayer && isInCanopy && !isTrunkCore && hasLeaf) return BLOCK_LEAF;
     }
   }
@@ -430,19 +454,19 @@ function getVoxelTypeAt(wx, y, wz) {
 
   if (y > h) return BLOCK_AIR;
 
-  if (y > CAVE_MIN_Y && y < h - 1) {
-    const caveNoiseA = smoothNoise(wx * CAVE_SCALE + y * 0.12 + 300, wz * CAVE_SCALE + y * 0.09 + 500);
-    const caveNoiseB = smoothNoise(wx * (CAVE_SCALE * 1.8) + y * 0.2 + 30, wz * (CAVE_SCALE * 1.8) + y * 0.16 + 90);
+  if (y > activeWorldGenProfile.caveMinY && y < h - 1) {
+    const caveNoiseA = smoothNoise(wx * activeWorldGenProfile.caveScale + y * 0.12 + 300, wz * activeWorldGenProfile.caveScale + y * 0.09 + 500);
+    const caveNoiseB = smoothNoise(wx * (activeWorldGenProfile.caveScale * 1.8) + y * 0.2 + 30, wz * (activeWorldGenProfile.caveScale * 1.8) + y * 0.16 + 90);
     const caveDensity = caveNoiseA * 0.7 + caveNoiseB * 0.3;
-    if (caveDensity > CAVE_THRESHOLD) return BLOCK_AIR;
+    if (caveDensity > activeWorldGenProfile.caveThreshold) return BLOCK_AIR;
   }
 
   if (y <= 1) return BLOCK_STONE;
 
   if (y === h) {
     const biome = biomeAt(wx, wz);
-    if (biome === BIOME_SNOW || h >= MOUNTAIN_HEIGHT_THRESHOLD) return BLOCK_SNOW;
-    if (biome === BIOME_DESERT || hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS)) return BLOCK_SAND;
+    if (biome === BIOME_SNOW || h >= activeWorldGenProfile.mountainHeightThreshold) return BLOCK_SNOW;
+    if (biome === BIOME_DESERT || hasWaterInRadiusCached(wx, wz, activeWorldGenProfile.sandWaterRadius)) return BLOCK_SAND;
     return BLOCK_GRASS;
   }
   if (y >= h - 2) return BLOCK_DIRT;
@@ -697,11 +721,11 @@ function sampleTerrainColorAtWorld(x, z) {
   const biome = biomeAt(x, z);
 
   if (water >= h) return '#346fba';
-  if (h > OCEAN_LEVEL + 9) return '#596675';
+  if (h > activeWorldGenProfile.oceanLevel + 9) return '#596675';
   if (biome === BIOME_SNOW) return '#f4f9ff';
   if (biome === BIOME_DESERT) return '#dcbf72';
-  if (h > OCEAN_LEVEL + 4) return '#59984a';
-  if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) return '#d1bf88';
+  if (h > activeWorldGenProfile.oceanLevel + 4) return '#59984a';
+  if (hasWaterInRadiusCached(x, z, activeWorldGenProfile.sandWaterRadius)) return '#d1bf88';
   return '#4f8f3e';
 }
 
@@ -778,12 +802,28 @@ function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
   ctx.arc(playerPoint.px, playerPoint.pz, Math.max(2.2, 3.6 * scale), 0, Math.PI * 2);
   ctx.fill();
 
+  const markerLength = Math.max(4.4, 6.2 * scale);
+  const markerWidth = Math.max(1.6, 2.2 * scale);
+  const markerBackOffset = Math.max(1.2, 1.7 * scale);
+
+  camera.getWorldDirection(tmpLookDirection);
+  tmpLookDirection.y = 0;
+  if (tmpLookDirection.lengthSq() < 1e-8) tmpLookDirection.set(0, 0, -1);
+  tmpLookDirection.normalize();
+
+  const tipX = playerPoint.px + tmpLookDirection.x * markerLength;
+  const tipZ = playerPoint.pz + tmpLookDirection.z * markerLength;
+  const baseCenterX = playerPoint.px - tmpLookDirection.x * markerBackOffset;
+  const baseCenterZ = playerPoint.pz - tmpLookDirection.z * markerBackOffset;
+  const perpX = -tmpLookDirection.z;
+  const perpZ = tmpLookDirection.x;
+
   ctx.strokeStyle = '#0d47a1';
   ctx.lineWidth = Math.max(0.9, 0.9 * scale);
   ctx.beginPath();
-  ctx.moveTo(playerPoint.px, playerPoint.pz - Math.max(4.4, 6.2 * scale));
-  ctx.lineTo(playerPoint.px + Math.max(1.6, 2.2 * scale), playerPoint.pz - Math.max(1.2, 1.7 * scale));
-  ctx.lineTo(playerPoint.px - Math.max(1.6, 2.2 * scale), playerPoint.pz - Math.max(1.2, 1.7 * scale));
+  ctx.moveTo(tipX, tipZ);
+  ctx.lineTo(baseCenterX + perpX * markerWidth, baseCenterZ + perpZ * markerWidth);
+  ctx.lineTo(baseCenterX - perpX * markerWidth, baseCenterZ - perpZ * markerWidth);
   ctx.closePath();
   ctx.stroke();
 }
@@ -800,6 +840,7 @@ function drawMaps() {
 
 function setMapOpen(nextOpen) {
   mapOpen = nextOpen;
+  if (mapOpen && document.pointerLockElement) document.exitPointerLock();
   fullMapOverlayEl.classList.toggle('hidden', !mapOpen);
   if (!mapOpen) closeMapContextMenu();
 }
@@ -940,6 +981,7 @@ function startWorld(worldData) {
   miniMapEl.classList.remove('hidden');
 
   setWorldSeed(worldData.seed);
+  activeWorldGenProfile = getWorldGenProfile(worldData);
   resetWorldCaches();
   rebuildMapStaticLayers();
   lastMiniMapDrawAt = 0;
@@ -955,7 +997,9 @@ function startWorld(worldData) {
   const idx = worlds.findIndex((w) => w.id === worldData.id);
   if (idx >= 0) {
     worlds[idx].lastPlayedAt = Date.now();
+    if (!worlds[idx].generation) worlds[idx].generation = { ...activeWorldGenProfile };
     saveWorldSaves(worlds);
+    currentWorld = worlds[idx];
   }
 
   setTimeSpeed(1);
@@ -973,6 +1017,7 @@ function createWorld(name) {
     createdAt: now,
     lastPlayedAt: now,
     pins: [],
+    generation: { ...DEFAULT_WORLD_GEN_PROFILE },
   };
   worlds.unshift(worldData);
   saveWorldSaves(worlds);
