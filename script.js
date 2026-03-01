@@ -20,6 +20,11 @@ const BLOCK_LEAF = 5;
 const BLOCK_WATER = 6;
 const BLOCK_SAND = 7;
 const BLOCK_APPLE = 8;
+const BLOCK_SNOW = 9;
+
+const BIOME_PLAINS = 0;
+const BIOME_DESERT = 1;
+const BIOME_SNOW = 2;
 
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
@@ -88,6 +93,7 @@ const materials = {
   [BLOCK_WATER]: new THREE.MeshStandardMaterial({ color: '#3e8fe3', roughness: 0.2, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide }),
   [BLOCK_SAND]: new THREE.MeshStandardMaterial({ color: '#dfcb8d', roughness: 0.96, side: THREE.DoubleSide }),
   [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
+  [BLOCK_SNOW]: new THREE.MeshStandardMaterial({ color: '#f4f7ff', roughness: 0.88, side: THREE.DoubleSide }),
 };
 
 let worldSeed = 1;
@@ -110,6 +116,7 @@ const PIN_CLICK_RADIUS_WORLD = 10;
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const sandRadiusCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
+const biomeCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
 
 function loadWorldSaves() {
@@ -179,6 +186,7 @@ function resetWorldCaches() {
   terrainHeightCache.fill(-1);
   waterHeightCache.fill(-1);
   sandRadiusCache.fill(-1);
+  biomeCache.fill(-1);
   treeCenterCache.clear();
 }
 
@@ -300,6 +308,32 @@ function hasWaterInRadiusCached(x, z, radius) {
   return false;
 }
 
+function getBiomeCached(x, z) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = biomeCache[cacheIndex];
+  if (cached >= 0) return cached;
+
+  const temperature = smoothNoise(clampedX * 0.013 + 123, clampedZ * 0.013 + 48);
+  const humidity = smoothNoise(clampedX * 0.017 + 11, clampedZ * 0.017 + 189);
+
+  let biome = BIOME_PLAINS;
+  if (temperature < 0.3) {
+    biome = BIOME_SNOW;
+  } else if (temperature > 0.64 && humidity < 0.42) {
+    biome = BIOME_DESERT;
+  }
+
+  biomeCache[cacheIndex] = biome;
+  return biome;
+}
+
+function biomeAt(x, z) {
+  return getBiomeCached(x, z);
+}
+
+
 function isTreeCenter(wx, wz) {
   if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
   if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
@@ -308,7 +342,12 @@ function isTreeCenter(wx, wz) {
   if (treeCenterCache.has(cacheKey)) return treeCenterCache.get(cacheKey);
 
   const centerHeight = terrainHeight(wx, wz);
+  const biome = biomeAt(wx, wz);
   if (centerHeight <= OCEAN_LEVEL + 1 || hasWaterAt(wx, wz)) {
+    treeCenterCache.set(cacheKey, false);
+    return false;
+  }
+  if (biome === BIOME_DESERT) {
     treeCenterCache.set(cacheKey, false);
     return false;
   }
@@ -328,7 +367,8 @@ function isTreeCenter(wx, wz) {
     return false;
   }
 
-  const result = hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > TREE_DENSITY_THRESHOLD;
+  const treeDensityThreshold = biome === BIOME_SNOW ? 0.9 : TREE_DENSITY_THRESHOLD;
+  const result = hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > treeDensityThreshold;
   treeCenterCache.set(cacheKey, result);
   return result;
 }
@@ -382,7 +422,12 @@ function getVoxelTypeAt(wx, y, wz) {
   if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
 
   if (y > h) return BLOCK_AIR;
-  if (y === h) return hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS) ? BLOCK_SAND : BLOCK_GRASS;
+  if (y === h) {
+    const biome = biomeAt(wx, wz);
+    if (biome === BIOME_SNOW) return BLOCK_SNOW;
+    if (biome === BIOME_DESERT || hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS)) return BLOCK_SAND;
+    return BLOCK_GRASS;
+  }
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
 }
@@ -530,7 +575,7 @@ class ChunkManager {
     group.position.set(chunkOriginX, 0, chunkOriginZ);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE]) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
       const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
@@ -632,9 +677,12 @@ function createScratchCanvas(size) {
 function sampleTerrainColorAtWorld(x, z) {
   const h = terrainHeight(x, z);
   const water = waterHeight(x, z);
+  const biome = biomeAt(x, z);
 
   if (water >= h) return '#346fba';
   if (h > OCEAN_LEVEL + 9) return '#6f7b85';
+  if (biome === BIOME_SNOW) return '#e6ecff';
+  if (biome === BIOME_DESERT) return '#dcbf72';
   if (h > OCEAN_LEVEL + 4) return '#59984a';
   if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) return '#d1bf88';
   return '#4f8f3e';
