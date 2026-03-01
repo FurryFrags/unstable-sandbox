@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
-const MAX_HEIGHT = 16;
+const MAX_HEIGHT = Math.round(16 * 1.3);
 const SEA_LEVEL = 4;
 
 const CHUNK_SIZE = 16;
