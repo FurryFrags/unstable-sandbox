@@ -24,12 +24,24 @@ const BLOCK_APPLE = 8;
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
-const TREE_LEAF_CHANCE = 0.4;
+const TREE_LEAF_CHANCE = 0.8;
 const TREE_APPLE_CHANCE = 0.08;
 const SAND_WATER_RADIUS = 3;
 
+const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
+const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
+
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
+const homeMenuEl = document.getElementById('home-menu');
+const worldHudEl = document.getElementById('world-hud');
+const worldListEl = document.getElementById('world-list');
+const newWorldNameInput = document.getElementById('new-world-name');
+const createWorldBtn = document.getElementById('create-world-btn');
+const optionStartFly = document.getElementById('option-start-fly');
+const worldTitleEl = document.getElementById('world-title');
+const backHomeBtn = document.getElementById('back-home-btn');
+const timeSpeedButtons = [...document.querySelectorAll('[data-time-speed]')];
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -48,22 +60,13 @@ scene.add(hemiLight);
 
 const sun = new THREE.DirectionalLight('#fff7d2', 1.1);
 sun.position.set(60, 90, 35);
-sun.castShadow = true;
-sun.shadow.mapSize.set(512, 512);
-sun.shadow.camera.left = -70;
-sun.shadow.camera.right = 70;
-sun.shadow.camera.top = 70;
-sun.shadow.camera.bottom = -70;
-sun.shadow.camera.near = 10;
-sun.shadow.camera.far = 220;
 scene.add(sun);
 
-const sunVisual = new THREE.Mesh(
-  new THREE.SphereGeometry(6, 20, 20),
-  new THREE.MeshBasicMaterial({ color: '#ffe78a' }),
-);
-sunVisual.position.set(115, 105, -60);
+const sunVisual = new THREE.Mesh(new THREE.SphereGeometry(6, 20, 20), new THREE.MeshBasicMaterial({ color: '#ffe78a' }));
 scene.add(sunVisual);
+
+const moonVisual = new THREE.Mesh(new THREE.SphereGeometry(4.5, 18, 18), new THREE.MeshBasicMaterial({ color: '#d5e3ff' }));
+scene.add(moonVisual);
 
 const world = new THREE.Group();
 scene.add(world);
@@ -74,49 +77,83 @@ const materials = {
   [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ color: '#7b5534', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_LEAF]: new THREE.MeshStandardMaterial({ color: '#3f8f3f', roughness: 0.9, side: THREE.DoubleSide }),
-  [BLOCK_WATER]: new THREE.MeshStandardMaterial({
-    color: '#3e8fe3',
-    roughness: 0.2,
-    transparent: true,
-    opacity: 0.65,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  }),
+  [BLOCK_WATER]: new THREE.MeshStandardMaterial({ color: '#3e8fe3', roughness: 0.2, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide }),
   [BLOCK_SAND]: new THREE.MeshStandardMaterial({ color: '#dfcb8d', roughness: 0.96, side: THREE.DoubleSide }),
   [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
 };
+
+let worldSeed = 1;
+let seedOffsetA = 0;
+let seedOffsetB = 0;
+let worldActive = false;
+let currentWorld = null;
+let timeSpeed = 1;
+let dayPhase = 0.18;
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const sandRadiusCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
 
+function loadWorldSaves() {
+  try {
+    return JSON.parse(localStorage.getItem(WORLD_SAVE_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveWorldSaves(worlds) {
+  localStorage.setItem(WORLD_SAVE_KEY, JSON.stringify(worlds));
+}
+
+function loadOptions() {
+  try {
+    return { startFlyMode: false, ...JSON.parse(localStorage.getItem(WORLD_OPTION_KEY) || '{}') };
+  } catch {
+    return { startFlyMode: false };
+  }
+}
+
+function saveOptions(options) {
+  localStorage.setItem(WORLD_OPTION_KEY, JSON.stringify(options));
+}
+
+const options = loadOptions();
+optionStartFly.checked = !!options.startFlyMode;
+
+function hashStringToSeed(value) {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) || 1;
+}
+
+function setWorldSeed(seed) {
+  worldSeed = seed;
+  seedOffsetA = (seed % 997) * 0.1337;
+  seedOffsetB = (seed % 577) * 0.2811;
+}
+
+function resetWorldCaches() {
+  terrainHeightCache.fill(-1);
+  waterHeightCache.fill(-1);
+  sandRadiusCache.fill(-1);
+  treeCenterCache.clear();
+}
+
 function worldColumnIndex(x, z) {
   return x + z * WORLD_SIZE;
 }
-
-function getTerrainHeightCached(x, z) {
-  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
-  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
-  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
-  const cached = terrainHeightCache[cacheIndex];
-  if (cached >= 0) return cached;
-
-  const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
-  const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
-  const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
-  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
-  terrainHeightCache[cacheIndex] = height;
-  return height;
-}
-
 
 function fract(v) {
   return v - Math.floor(v);
 }
 
 function hash2(x, z) {
-  return fract(Math.sin(x * 127.1 + z * 311.7) * 43758.5453123);
+  return fract(Math.sin((x + seedOffsetA) * 127.1 + (z + seedOffsetB) * 311.7 + worldSeed * 0.013) * 43758.5453123);
 }
 
 function smoothNoise(x, z) {
@@ -133,6 +170,21 @@ function smoothNoise(x, z) {
   const nx0 = a + (b - a) * sx;
   const nx1 = c + (d - c) * sx;
   return nx0 + (nx1 - nx0) * sz;
+}
+
+function getTerrainHeightCached(x, z) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = terrainHeightCache[cacheIndex];
+  if (cached >= 0) return cached;
+
+  const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
+  const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
+  const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
+  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  terrainHeightCache[cacheIndex] = height;
+  return height;
 }
 
 function terrainHeight(x, z) {
@@ -161,7 +213,6 @@ function getWaterHeightCached(x, z) {
   const basinDepth = avgNeighborHeight - h;
 
   let computedWaterHeight = -1;
-
   const oceanBlend = deepOceanSignal * 0.65 + continental * 0.35;
   if (oceanBlend < 0.44 && h <= OCEAN_LEVEL + 3) {
     computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.44 - oceanBlend) * 4));
@@ -170,10 +221,7 @@ function getWaterHeightCached(x, z) {
   const maxCraterWaterHeight = OCEAN_LEVEL + 4;
   if (h <= maxCraterWaterHeight && basinDepth > 0.9 && craterSignal < 0.3) {
     const craterDepth = Math.round((0.3 - craterSignal) * 8);
-    computedWaterHeight = Math.max(
-      computedWaterHeight,
-      Math.max(h, Math.min(maxCraterWaterHeight, h + Math.min(3, Math.max(1, craterDepth)))),
-    );
+    computedWaterHeight = Math.max(computedWaterHeight, Math.max(h, Math.min(maxCraterWaterHeight, h + Math.min(3, Math.max(1, craterDepth)))));
   }
 
   const encodedHeight = computedWaterHeight < 0 ? 0 : computedWaterHeight + 1;
@@ -261,13 +309,8 @@ function treeBlockAt(wx, y, wz) {
       const trunkHeight = 4 + Math.floor(hash2(tx + 91.7, tz + 17.3) * 2);
       const trunkTopY = trunkBaseY + trunkHeight - 1;
 
-      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
-        return BLOCK_WOOD;
-      }
-
-      if (wx === tx && wz === tz && y === trunkTopY + 1) {
-        return BLOCK_LEAF;
-      }
+      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) return BLOCK_WOOD;
+      if (wx === tx && wz === tz && y === trunkTopY + 1) return BLOCK_LEAF;
 
       const dx = Math.abs(wx - tx);
       const dz = Math.abs(wz - tz);
@@ -278,19 +321,12 @@ function treeBlockAt(wx, y, wz) {
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
       const isApplePoint = y === leafBottom && (dx + dz === TREE_CANOPY_RADIUS + 1 || (dx === TREE_CANOPY_RADIUS && dz === TREE_CANOPY_RADIUS));
       if (isApplePoint) {
-        const hasApple = hash2(
-          wx * 0.69 + y * 0.21 + 13.5,
-          wz * 0.94 + y * 0.53 + 44.1,
-        ) < TREE_APPLE_CHANCE;
-        if (hasApple) {
-          return BLOCK_APPLE;
-        }
+        const hasApple = hash2(wx * 0.69 + y * 0.21 + 13.5, wz * 0.94 + y * 0.53 + 44.1) < TREE_APPLE_CHANCE;
+        if (hasApple) return BLOCK_APPLE;
       }
 
       const hasLeaf = hash2(wx * 1.91 + y * 0.47 + 31.7, wz * 1.37 + y * 0.73 + 19.3) < TREE_LEAF_CHANCE;
-      if (isInLeafLayer && isInCanopy && !isTrunkCore && hasLeaf) {
-        return BLOCK_LEAF;
-      }
+      if (isInLeafLayer && isInCanopy && !isTrunkCore && hasLeaf) return BLOCK_LEAF;
     }
   }
 
@@ -308,9 +344,7 @@ function getVoxelTypeAt(wx, y, wz) {
   if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
 
   if (y > h) return BLOCK_AIR;
-  if (y === h) {
-    return hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS) ? BLOCK_SAND : BLOCK_GRASS;
-  }
+  if (y === h) return hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS) ? BLOCK_SAND : BLOCK_GRASS;
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
 }
@@ -320,7 +354,6 @@ function buildChunkVoxelData(cx, cz) {
   const voxels = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * sizeY);
   const minX = cx * CHUNK_SIZE;
   const minZ = cz * CHUNK_SIZE;
-
   const voxelIndex = (lx, y, lz) => lx + lz * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
 
   for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
@@ -361,14 +394,7 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
   };
 
   const isWaterAdjacent = (x, y, z) => {
-    const adjacent = [
-      [1, 0, 0],
-      [-1, 0, 0],
-      [0, 1, 0],
-      [0, -1, 0],
-      [0, 0, 1],
-      [0, 0, -1],
-    ];
+    const adjacent = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
     for (const [dx, dy, dz] of adjacent) {
       if (voxelAt(x + dx, y + dy, z + dz) === BLOCK_WATER) return true;
     }
@@ -411,10 +437,8 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   geometry.computeBoundingBox();
-
   return geometry;
 }
-
 
 class ChunkManager {
   constructor(root) {
@@ -433,7 +457,6 @@ class ChunkManager {
   inWorld(cx, cz) {
     return cx >= 0 && cz >= 0 && cx < WORLD_CHUNKS && cz < WORLD_CHUNKS;
   }
-
 
   enqueueChunkBuild(cx, cz, camChunkX, camChunkZ) {
     const key = this.key(cx, cz);
@@ -492,22 +515,20 @@ class ChunkManager {
   unloadChunk(chunk) {
     this.root.remove(chunk.group);
     for (const mesh of chunk.meshes) {
-      mesh.geometry.dispose();
+      if (mesh.geometry) mesh.geometry.dispose();
     }
   }
 
-  unloadAllChunks() {
-    for (const chunk of this.chunks.values()) {
-      this.unloadChunk(chunk);
-    }
+  clear() {
+    for (const [, chunk] of this.chunks) this.unloadChunk(chunk);
     this.chunks.clear();
     this.pendingBuildQueue.length = 0;
     this.pendingBuildSet.clear();
   }
 
-  update(camera) {
-    const camChunkX = Math.floor(camera.position.x / CHUNK_SIZE);
-    const camChunkZ = Math.floor(camera.position.z / CHUNK_SIZE);
+  update(cameraObj) {
+    const camChunkX = Math.floor(cameraObj.position.x / CHUNK_SIZE);
+    const camChunkZ = Math.floor(cameraObj.position.z / CHUNK_SIZE);
 
     for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz += 1) {
       for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx += 1) {
@@ -517,30 +538,20 @@ class ChunkManager {
 
     this.processChunkBuildQueue();
 
-    this.projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.projectionView.multiplyMatrices(cameraObj.projectionMatrix, cameraObj.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
 
-    for (const [key, chunk] of this.chunks) {
+    for (const [, chunk] of this.chunks) {
       const dx = chunk.cx - camChunkX;
       const dz = chunk.cz - camChunkZ;
-      const visible = this.frustum.intersectsBox(chunk.bounds);
-      chunk.group.visible = visible;
-
+      chunk.group.visible = this.frustum.intersectsBox(chunk.bounds);
       const castShadow = Math.max(Math.abs(dx), Math.abs(dz)) <= SHADOW_CAST_DISTANCE;
-      for (const mesh of chunk.meshes) {
-        mesh.castShadow = castShadow;
-      }
+      for (const mesh of chunk.meshes) mesh.castShadow = castShadow;
     }
-
-    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: infinite | Full block-face meshing active.`;
   }
 }
 
 const chunkManager = new ChunkManager(world);
-
-function makeWorld() {
-  chunkManager.update(camera);
-}
 
 const velocity = new THREE.Vector3();
 const moveInput = new THREE.Vector3();
@@ -568,16 +579,47 @@ function groundLevelAt(x, z) {
 }
 
 function setModeStatus() {
-  if (pointerLocked) {
-    statusEl.textContent = flyMode
-      ? 'Fly mode ON. Move with WASD, Space up, Shift down. Double-tap Space to land mode.'
-      : 'Fly mode OFF. Move with WASD, Space jump. Double-tap Space to fly.';
+  if (!worldActive) return;
+  if (!pointerLocked) {
+    statusEl.textContent = `World: ${currentWorld.name} | Click scene to lock pointer.`;
     return;
   }
-  statusEl.textContent = 'Click the scene to re-enter spectator mode.';
+
+  const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | Time ${timeSpeed}x | Chunks ${chunkManager.chunks.size}`;
+}
+
+function setTimeSpeed(speed) {
+  timeSpeed = speed;
+  for (const button of timeSpeedButtons) {
+    button.classList.toggle('active', Number(button.dataset.timeSpeed) === speed);
+  }
+  setModeStatus();
+}
+
+function updateDayNight(dt) {
+  dayPhase = (dayPhase + dt * 0.03 * timeSpeed) % 1;
+  const angle = dayPhase * Math.PI * 2;
+  const orbitRadius = 150;
+  const sx = Math.cos(angle) * orbitRadius;
+  const sy = Math.sin(angle) * orbitRadius;
+
+  sun.position.set(sx, sy, -70);
+  sunVisual.position.copy(sun.position);
+  moonVisual.position.set(-sx, -sy, 70);
+
+  const daylight = THREE.MathUtils.clamp((sy + 25) / 140, 0.1, 1);
+  sun.intensity = 0.25 + daylight * 1.0;
+  hemiLight.intensity = 0.2 + daylight * 0.9;
+
+  const dayColor = new THREE.Color('#87b9ff');
+  const duskColor = new THREE.Color('#1d2747');
+  scene.background = duskColor.clone().lerp(dayColor, daylight);
 }
 
 function moveCamera(dt) {
+  if (!worldActive) return;
+
   moveInput.set(0, 0, 0);
   if (activeKeys.has('KeyW')) moveInput.z += 1;
   if (activeKeys.has('KeyS')) moveInput.z -= 1;
@@ -619,13 +661,128 @@ function moveCamera(dt) {
   camera.quaternion.setFromEuler(cameraEuler);
 }
 
+function saveCurrentWorldMeta() {
+  if (!currentWorld) return;
+  const worlds = loadWorldSaves();
+  const idx = worlds.findIndex((w) => w.id === currentWorld.id);
+  if (idx >= 0) {
+    worlds[idx].lastPlayedAt = Date.now();
+    saveWorldSaves(worlds);
+  }
+}
+
+function enterHomeMenu() {
+  worldActive = false;
+  homeMenuEl.classList.remove('hidden');
+  worldHudEl.classList.add('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
+  setModeStatus();
+}
+
+function startWorld(worldData) {
+  currentWorld = worldData;
+  worldTitleEl.textContent = `World: ${worldData.name}`;
+  worldActive = true;
+  homeMenuEl.classList.add('hidden');
+  worldHudEl.classList.remove('hidden');
+
+  setWorldSeed(worldData.seed);
+  resetWorldCaches();
+  chunkManager.clear();
+
+  camera.position.set(12, 30, 12);
+  yaw = Math.PI * 0.2;
+  pitch = -0.2;
+  flyMode = !!options.startFlyMode;
+  verticalVelocity = 0;
+
+  const worlds = loadWorldSaves();
+  const idx = worlds.findIndex((w) => w.id === worldData.id);
+  if (idx >= 0) {
+    worlds[idx].lastPlayedAt = Date.now();
+    saveWorldSaves(worlds);
+  }
+
+  setTimeSpeed(1);
+  setModeStatus();
+}
+
+function createWorld(name) {
+  const trimmed = name.trim() || `World ${new Date().toLocaleDateString()}`;
+  const worlds = loadWorldSaves();
+  const now = Date.now();
+  const worldData = {
+    id: `w-${now}-${Math.floor(Math.random() * 10000)}`,
+    name: trimmed,
+    seed: hashStringToSeed(`${trimmed}-${now}`),
+    createdAt: now,
+    lastPlayedAt: now,
+  };
+  worlds.unshift(worldData);
+  saveWorldSaves(worlds);
+  renderWorldList();
+  return worldData;
+}
+
+function renderWorldList() {
+  const worlds = loadWorldSaves().sort((a, b) => (b.lastPlayedAt || 0) - (a.lastPlayedAt || 0));
+  worldListEl.innerHTML = '';
+
+  if (!worlds.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No worlds yet — create one below.';
+    worldListEl.append(empty);
+    return;
+  }
+
+  for (const worldData of worlds) {
+    const card = document.createElement('div');
+    card.className = 'world-card';
+
+    const meta = document.createElement('div');
+    meta.innerHTML = `<strong>${worldData.name}</strong><br><small>Seed ${worldData.seed}</small>`;
+
+    const playButton = document.createElement('button');
+    playButton.type = 'button';
+    playButton.textContent = 'Play';
+    playButton.addEventListener('click', () => startWorld(worldData));
+
+    card.append(meta, playButton);
+    worldListEl.append(card);
+  }
+}
+
+optionStartFly.addEventListener('change', () => {
+  options.startFlyMode = optionStartFly.checked;
+  saveOptions(options);
+});
+
+createWorldBtn.addEventListener('click', () => {
+  const newWorld = createWorld(newWorldNameInput.value);
+  newWorldNameInput.value = '';
+  startWorld(newWorld);
+});
+
+newWorldNameInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') createWorldBtn.click();
+});
+
+backHomeBtn.addEventListener('click', () => {
+  saveCurrentWorldMeta();
+  enterHomeMenu();
+  renderWorldList();
+});
+
+timeSpeedButtons.forEach((button) => {
+  button.addEventListener('click', () => setTimeSpeed(Number(button.dataset.timeSpeed)));
+});
+
 window.addEventListener('keydown', (event) => {
+  if (!worldActive) return;
   activeKeys.add(event.code);
 
   const isInitialKeydown = !event.repeat;
-  const shouldIgnoreTapLogic = (code) => code === 'Space' && !isInitialKeydown;
-
-  if (shouldIgnoreTapLogic(event.code)) return;
+  if (event.code === 'Space' && !isInitialKeydown) return;
 
   if (event.code === 'Space' && isInitialKeydown) {
     const now = performance.now();
@@ -647,12 +804,14 @@ window.addEventListener('keydown', (event) => {
     }
   }
 });
-window.addEventListener('keyup', (event) => activeKeys.delete(event.code));
+
+window.addEventListener('keyup', (event) => {
+  activeKeys.delete(event.code);
+});
 
 canvas.addEventListener('click', async () => {
-  if (!document.pointerLockElement) {
-    await canvas.requestPointerLock({ unadjustedMovement: true }).catch(() => {});
-  }
+  if (!worldActive || document.pointerLockElement) return;
+  await canvas.requestPointerLock({ unadjustedMovement: true }).catch(() => {});
 });
 
 document.addEventListener('pointerlockchange', () => {
@@ -661,7 +820,7 @@ document.addEventListener('pointerlockchange', () => {
 });
 
 document.addEventListener('mousemove', (event) => {
-  if (!pointerLocked) return;
+  if (!pointerLocked || !worldActive) return;
   yaw -= event.movementX * 0.0023;
   pitch -= event.movementY * 0.0023;
   pitch = THREE.MathUtils.clamp(pitch, -1.52, 1.52);
@@ -673,15 +832,20 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-makeWorld();
+renderWorldList();
+enterHomeMenu();
 
 let lastTime = performance.now();
 function tick(now) {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
+  updateDayNight(dt);
   moveCamera(dt);
-  chunkManager.update(camera);
+  if (worldActive) {
+    chunkManager.update(camera);
+    setModeStatus();
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
