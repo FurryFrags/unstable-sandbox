@@ -1,16 +1,17 @@
 import * as THREE from 'three';
 
-const WORLD_SIZE = 84 * 3;
+const WORLD_SIZE = 84 * 9;
 const MAX_HEIGHT = Math.round(16 * 1.3);
-const OCEAN_LEVEL = 6;
-const RIVER_LEVEL = 5;
+const OCEAN_LEVEL = 8;
+const RIVER_LEVEL = 6;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = 4;
+const RENDER_DISTANCE = 6;
 const SHADOW_CAST_DISTANCE = 2;
 const CHUNK_UNLOAD_PADDING = 1;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
+const FLY_SPEED_MULTIPLIER = 3;
 
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 1;
@@ -151,17 +152,17 @@ function getWaterHeightCached(x, z) {
   let computedWaterHeight = -1;
 
   const oceanBlend = deepOceanSignal * 0.65 + continental * 0.35;
-  if (oceanBlend < 0.34 && h <= OCEAN_LEVEL + 2) {
-    computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.34 - oceanBlend) * 3));
+  if (oceanBlend < 0.44 && h <= OCEAN_LEVEL + 3) {
+    computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.44 - oceanBlend) * 4));
   }
 
-  if (riverDistance < 0.045 && h <= MAX_HEIGHT - 3) {
+  if (riverDistance < 0.06 && h <= MAX_HEIGHT - 2) {
     computedWaterHeight = Math.max(computedWaterHeight, Math.max(h, RIVER_LEVEL));
   }
 
-  if (lakeSignal < 0.15 && h >= RIVER_LEVEL - 1 && h <= MAX_HEIGHT - 2) {
-    const lakeDepth = Math.round((0.15 - lakeSignal) * 8);
-    computedWaterHeight = Math.max(computedWaterHeight, h + Math.min(3, Math.max(1, lakeDepth)));
+  if (lakeSignal < 0.2 && h >= RIVER_LEVEL - 1 && h <= MAX_HEIGHT - 1) {
+    const lakeDepth = Math.round((0.2 - lakeSignal) * 10);
+    computedWaterHeight = Math.max(computedWaterHeight, h + Math.min(4, Math.max(1, lakeDepth)));
   }
 
   const encodedHeight = computedWaterHeight < 0 ? 0 : computedWaterHeight + 1;
@@ -513,7 +514,8 @@ function moveCamera(dt) {
 
   if (moveInput.lengthSq() > 0) moveInput.normalize();
 
-  const speed = activeKeys.has('ControlLeft') ? 34 : 18;
+  const baseSpeed = activeKeys.has('ControlLeft') ? 34 : 18;
+  const speed = flyMode ? baseSpeed * FLY_SPEED_MULTIPLIER : baseSpeed;
   velocity.copy(moveInput).multiplyScalar(speed * dt);
 
   forward.set(Math.sin(yaw), 0, Math.cos(yaw));
