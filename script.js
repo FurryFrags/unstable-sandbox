@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
-const MAX_HEIGHT = 16;
+const MAX_HEIGHT = 16 * 3;
 const SEA_LEVEL = 4;
 
 const CHUNK_SIZE = 16;
@@ -9,11 +9,18 @@ const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
 const RENDER_DISTANCE = 4;
 const SHADOW_CAST_DISTANCE = 2;
 const CHUNK_UNLOAD_PADDING = 1;
+const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 
 const BLOCK_AIR = 0;
 const BLOCK_STONE = 1;
 const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
+const BLOCK_WOOD = 4;
+const BLOCK_LEAF = 5;
+
+const TREE_SPACING = 14;
+const TREE_CANOPY_RADIUS = 2;
+const TREE_DENSITY_THRESHOLD = 0.92;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -21,7 +28,7 @@ const statusEl = document.getElementById('status');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
@@ -64,10 +71,35 @@ water.frustumCulled = false;
 scene.add(water);
 
 const materials = {
-  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9 }),
-  [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1 }),
-  [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95 }),
+  [BLOCK_STONE]: new THREE.MeshLambertMaterial({ color: '#7f858f', side: THREE.FrontSide }),
+  [BLOCK_DIRT]: new THREE.MeshLambertMaterial({ color: '#805d3b', side: THREE.FrontSide }),
+  [BLOCK_GRASS]: new THREE.MeshLambertMaterial({ color: '#58a83f', side: THREE.FrontSide }),
+  [BLOCK_WOOD]: new THREE.MeshLambertMaterial({ color: '#7b5534', side: THREE.FrontSide }),
+  [BLOCK_LEAF]: new THREE.MeshLambertMaterial({ color: '#3f8f3f', side: THREE.FrontSide }),
 };
+
+const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
+const treeCenterCache = new Map();
+
+function worldColumnIndex(x, z) {
+  return x + z * WORLD_SIZE;
+}
+
+function getTerrainHeightCached(x, z) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = terrainHeightCache[cacheIndex];
+  if (cached >= 0) return cached;
+
+  const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
+  const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
+  const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
+  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  terrainHeightCache[cacheIndex] = height;
+  return height;
+}
+
 
 function fract(v) {
   return v - Math.floor(v);
@@ -94,15 +126,83 @@ function smoothNoise(x, z) {
 }
 
 function terrainHeight(x, z) {
-  const broad = smoothNoise(x * 0.05, z * 0.05) * 10;
-  const rolling = smoothNoise(x * 0.12 + 42, z * 0.12 + 12) * 6;
-  const detail = smoothNoise(x * 0.23 + 90, z * 0.23 + 37) * 2;
-  return Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  return getTerrainHeightCached(x, z);
+}
+
+function isTreeCenter(wx, wz) {
+  if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
+  if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
+
+  const cacheKey = `${wx},${wz}`;
+  if (treeCenterCache.has(cacheKey)) return treeCenterCache.get(cacheKey);
+
+  const centerHeight = terrainHeight(wx, wz);
+  if (centerHeight <= SEA_LEVEL + 1) {
+    treeCenterCache.set(cacheKey, false);
+    return false;
+  }
+
+  const north = terrainHeight(wx, wz - 1);
+  const south = terrainHeight(wx, wz + 1);
+  const east = terrainHeight(wx + 1, wz);
+  const west = terrainHeight(wx - 1, wz);
+  const isSteep = Math.max(
+    Math.abs(centerHeight - north),
+    Math.abs(centerHeight - south),
+    Math.abs(centerHeight - east),
+    Math.abs(centerHeight - west),
+  ) > 2;
+  if (isSteep) {
+    treeCenterCache.set(cacheKey, false);
+    return false;
+  }
+
+  const result = hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > TREE_DENSITY_THRESHOLD;
+  treeCenterCache.set(cacheKey, result);
+  return result;
+}
+
+function treeBlockAt(wx, y, wz) {
+  const minTreeX = Math.floor((wx - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const maxTreeX = Math.ceil((wx + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const minTreeZ = Math.floor((wz - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const maxTreeZ = Math.ceil((wz + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+
+  for (let tx = minTreeX; tx <= maxTreeX; tx += TREE_SPACING) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += TREE_SPACING) {
+      if (!isTreeCenter(tx, tz)) continue;
+
+      const trunkBaseY = terrainHeight(tx, tz) + 1;
+      const trunkHeight = 4 + Math.floor(hash2(tx + 91.7, tz + 17.3) * 2);
+      const trunkTopY = trunkBaseY + trunkHeight - 1;
+
+      if (wx === tx && wz === tz && y >= trunkBaseY && y <= trunkTopY) {
+        return BLOCK_WOOD;
+      }
+
+      const dx = Math.abs(wx - tx);
+      const dz = Math.abs(wz - tz);
+      const leafBottom = trunkTopY - 2;
+      const leafTop = trunkTopY + 1;
+      const isInLeafLayer = y >= leafBottom && y <= leafTop;
+      const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
+      const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
+      if (isInLeafLayer && isInCanopy && !isTrunkCore) {
+        return BLOCK_LEAF;
+      }
+    }
+  }
+
+  return BLOCK_AIR;
 }
 
 function getVoxelTypeAt(wx, y, wz) {
   if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
   const h = terrainHeight(wx, wz);
+
+  const treeBlock = treeBlockAt(wx, y, wz);
+  if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
+
   if (y > h) return BLOCK_AIR;
   if (y === h) return h < SEA_LEVEL ? BLOCK_DIRT : BLOCK_GRASS;
   if (y >= h - 2) return BLOCK_DIRT;
@@ -138,127 +238,62 @@ function pushQuad(positions, normals, indices, corners, normal) {
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
-function buildMaterialGreedyGeometry(voxels, materialType) {
-  const dims = [CHUNK_SIZE, MAX_HEIGHT + 1, CHUNK_SIZE];
-  const positions = [];
-  const normals = [];
-  const indices = [];
+function buildChunkMaterialGeometries(voxels) {
+  const buffers = new Map();
+  for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF]) {
+    buffers.set(type, { positions: [], normals: [], indices: [] });
+  }
 
   const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
   const voxelAt = (x, y, z) => {
-    if (x < 0 || y < 0 || z < 0 || x >= dims[0] || y >= dims[1] || z >= dims[2]) return BLOCK_AIR;
+    if (x < 0 || y < 0 || z < 0 || x >= CHUNK_SIZE || y > MAX_HEIGHT || z >= CHUNK_SIZE) return BLOCK_AIR;
     return voxels[index(x, y, z)];
   };
 
-  const mask = new Int8Array(Math.max(dims[0] * dims[1], dims[1] * dims[2], dims[0] * dims[2]));
+  const faces = [
+    { normal: [1, 0, 0], corners: [[1, 0, 0], [1, 0, 1], [1, 1, 1], [1, 1, 0]], neighbor: [1, 0, 0] },
+    { normal: [-1, 0, 0], corners: [[0, 0, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1]], neighbor: [-1, 0, 0] },
+    { normal: [0, 1, 0], corners: [[0, 1, 0], [1, 1, 0], [1, 1, 1], [0, 1, 1]], neighbor: [0, 1, 0] },
+    { normal: [0, -1, 0], corners: [[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]], neighbor: [0, -1, 0] },
+    { normal: [0, 0, 1], corners: [[0, 0, 1], [0, 1, 1], [1, 1, 1], [1, 0, 1]], neighbor: [0, 0, 1] },
+    { normal: [0, 0, -1], corners: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], neighbor: [0, 0, -1] },
+  ];
 
-  for (let d = 0; d < 3; d += 1) {
-    const u = (d + 1) % 3;
-    const v = (d + 2) % 3;
-    const q = [0, 0, 0];
-    q[d] = 1;
-    const x = [0, 0, 0];
-    const du = [0, 0, 0];
-    const dv = [0, 0, 0];
+  for (let y = 0; y <= MAX_HEIGHT; y += 1) {
+    for (let z = 0; z < CHUNK_SIZE; z += 1) {
+      for (let x = 0; x < CHUNK_SIZE; x += 1) {
+        const blockType = voxelAt(x, y, z);
+        if (blockType === BLOCK_AIR) continue;
 
-    const width = dims[u];
-    const height = dims[v];
+        const buffer = buffers.get(blockType);
+        for (const face of faces) {
+          const nx = x + face.neighbor[0];
+          const ny = y + face.neighbor[1];
+          const nz = z + face.neighbor[2];
+          if (voxelAt(nx, ny, nz) !== BLOCK_AIR) continue;
 
-    for (x[d] = -1; x[d] < dims[d]; x[d] += 1) {
-      let n = 0;
-      for (x[v] = 0; x[v] < dims[v]; x[v] += 1) {
-        for (x[u] = 0; x[u] < dims[u]; x[u] += 1) {
-          const a = x[d] >= 0 ? voxelAt(x[0], x[1], x[2]) : BLOCK_AIR;
-          const b = x[d] < dims[d] - 1 ? voxelAt(x[0] + q[0], x[1] + q[1], x[2] + q[2]) : BLOCK_AIR;
-
-          if (a === materialType && b === BLOCK_AIR) {
-            mask[n] = 1;
-          } else if (b === materialType && a === BLOCK_AIR) {
-            mask[n] = -1;
-          } else {
-            mask[n] = 0;
-          }
-          n += 1;
-        }
-      }
-
-      n = 0;
-      for (let j = 0; j < height; j += 1) {
-        for (let i = 0; i < width; ) {
-          const c = mask[n];
-          if (!c) {
-            i += 1;
-            n += 1;
-            continue;
-          }
-
-          let w = 1;
-          while (i + w < width && mask[n + w] === c) w += 1;
-
-          let h = 1;
-          outer: while (j + h < height) {
-            for (let k = 0; k < w; k += 1) {
-              if (mask[n + k + h * width] !== c) break outer;
-            }
-            h += 1;
-          }
-
-          x[u] = i;
-          x[v] = j;
-          du[0] = 0;
-          du[1] = 0;
-          du[2] = 0;
-          dv[0] = 0;
-          dv[1] = 0;
-          dv[2] = 0;
-          du[u] = w;
-          dv[v] = h;
-
-          const side = c > 0 ? 1 : -1;
-          const normal = [0, 0, 0];
-          normal[d] = side;
-
-          const origin = [x[0], x[1], x[2]];
-          if (c < 0) {
-            origin[0] += q[0];
-            origin[1] += q[1];
-            origin[2] += q[2];
-          }
-
-          const p0 = [origin[0], origin[1], origin[2]];
-          const p1 = [origin[0] + du[0], origin[1] + du[1], origin[2] + du[2]];
-          const p2 = [origin[0] + du[0] + dv[0], origin[1] + du[1] + dv[1], origin[2] + du[2] + dv[2]];
-          const p3 = [origin[0] + dv[0], origin[1] + dv[1], origin[2] + dv[2]];
-
-          if (c > 0) {
-            pushQuad(positions, normals, indices, [p0, p3, p2, p1], normal);
-          } else {
-            pushQuad(positions, normals, indices, [p0, p1, p2, p3], normal);
-          }
-
-          for (let l = 0; l < h; l += 1) {
-            for (let k = 0; k < w; k += 1) {
-              mask[n + k + l * width] = 0;
-            }
-          }
-
-          i += w;
-          n += w;
+          const corners = face.corners.map(([cx, cy, cz]) => [x + cx, y + cy, z + cz]);
+          pushQuad(buffer.positions, buffer.normals, buffer.indices, corners, face.normal);
         }
       }
     }
   }
 
-  if (!positions.length) return null;
+  const geometries = new Map();
+  for (const [type, buffer] of buffers) {
+    if (!buffer.positions.length) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(buffer.positions, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(buffer.normals, 3));
+    geometry.setIndex(buffer.indices);
+    geometry.computeBoundingSphere();
+    geometry.computeBoundingBox();
+    geometries.set(type, geometry);
+  }
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setIndex(indices);
-  geometry.computeBoundingSphere();
-  geometry.computeBoundingBox();
-  return geometry;
+  return geometries;
 }
+
 
 class ChunkManager {
   constructor(root) {
@@ -266,6 +301,8 @@ class ChunkManager {
     this.chunks = new Map();
     this.frustum = new THREE.Frustum();
     this.projectionView = new THREE.Matrix4();
+    this.pendingBuildQueue = [];
+    this.pendingBuildSet = new Set();
   }
 
   key(cx, cz) {
@@ -274,6 +311,30 @@ class ChunkManager {
 
   inWorld(cx, cz) {
     return cx >= 0 && cz >= 0 && cx < WORLD_CHUNKS && cz < WORLD_CHUNKS;
+  }
+
+
+  enqueueChunkBuild(cx, cz, camChunkX, camChunkZ) {
+    const key = this.key(cx, cz);
+    if (this.chunks.has(key) || this.pendingBuildSet.has(key) || !this.inWorld(cx, cz)) return;
+    const distance = Math.max(Math.abs(cx - camChunkX), Math.abs(cz - camChunkZ));
+    this.pendingBuildQueue.push({ cx, cz, key, distance });
+    this.pendingBuildSet.add(key);
+  }
+
+  processChunkBuildQueue() {
+    if (!this.pendingBuildQueue.length) return;
+    this.pendingBuildQueue.sort((a, b) => a.distance - b.distance);
+
+    let built = 0;
+    while (built < MAX_CHUNK_BUILDS_PER_FRAME && this.pendingBuildQueue.length) {
+      const next = this.pendingBuildQueue.shift();
+      this.pendingBuildSet.delete(next.key);
+      if (!this.chunks.has(next.key)) {
+        this.buildChunk(next.cx, next.cz);
+        built += 1;
+      }
+    }
   }
 
   buildChunk(cx, cz) {
@@ -285,11 +346,10 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS]) {
-      const geometry = buildMaterialGreedyGeometry(voxels, type);
-      if (!geometry) continue;
+    const geometries = buildChunkMaterialGeometries(voxels);
+    for (const [type, geometry] of geometries) {
       const mesh = new THREE.Mesh(geometry, materials[type]);
-      mesh.receiveShadow = true;
+      mesh.receiveShadow = false;
       mesh.castShadow = false;
       mesh.frustumCulled = true;
       group.add(mesh);
@@ -318,9 +378,11 @@ class ChunkManager {
 
     for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz += 1) {
       for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx += 1) {
-        this.buildChunk(camChunkX + dx, camChunkZ + dz);
+        this.enqueueChunkBuild(camChunkX + dx, camChunkZ + dz, camChunkX, camChunkZ);
       }
     }
+
+    this.processChunkBuildQueue();
 
     this.projectionView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
@@ -344,7 +406,7 @@ class ChunkManager {
       }
     }
 
-    statusEl.textContent = `Chunks: ${this.chunks.size} | Render radius: ${RENDER_DISTANCE} | Greedy meshing active.`;
+    statusEl.textContent = `Chunks: ${this.chunks.size} | Pending: ${this.pendingBuildQueue.length} | Render radius: ${RENDER_DISTANCE} | Optimized chunk streaming + meshing active.`;
   }
 }
 
