@@ -691,7 +691,10 @@ let verticalVelocity = 0;
 let lastSpaceDown = -Infinity;
 const activeKeys = new Set();
 
-const PLAYER_HEIGHT = 1.7;
+const PLAYER_HEIGHT = 2;
+const PLAYER_EYE_HEIGHT = 1.7;
+const PLAYER_RADIUS = 0.35;
+const COLLISION_STEP = 0.1;
 const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
@@ -699,7 +702,66 @@ const DOUBLE_TAP_MS = 260;
 function groundLevelAt(x, z) {
   const tx = THREE.MathUtils.clamp(Math.round(x), 0, WORLD_SIZE - 1);
   const tz = THREE.MathUtils.clamp(Math.round(z), 0, WORLD_SIZE - 1);
-  return terrainHeight(tx, tz) + PLAYER_HEIGHT;
+  return terrainHeight(tx, tz) + 1 + PLAYER_EYE_HEIGHT;
+}
+
+function isSolidBlock(type) {
+  return type !== BLOCK_AIR && type !== BLOCK_WATER;
+}
+
+function getPlayerBounds(position = camera.position) {
+  const feetY = position.y - PLAYER_EYE_HEIGHT;
+  return {
+    minX: position.x - PLAYER_RADIUS,
+    maxX: position.x + PLAYER_RADIUS,
+    minY: feetY,
+    maxY: feetY + PLAYER_HEIGHT,
+    minZ: position.z - PLAYER_RADIUS,
+    maxZ: position.z + PLAYER_RADIUS,
+  };
+}
+
+function hasSolidCollision(position = camera.position) {
+  const bounds = getPlayerBounds(position);
+  const minX = Math.floor(bounds.minX);
+  const maxX = Math.floor(bounds.maxX - 1e-6);
+  const minY = Math.floor(bounds.minY);
+  const maxY = Math.floor(bounds.maxY - 1e-6);
+  const minZ = Math.floor(bounds.minZ);
+  const maxZ = Math.floor(bounds.maxZ - 1e-6);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let z = minZ; z <= maxZ; z += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if (isSolidBlock(getVoxelTypeAt(x, y, z))) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function moveWithCollisions(axis, amount) {
+  if (amount === 0) return false;
+  const steps = Math.ceil(Math.abs(amount) / COLLISION_STEP);
+  const stepAmount = amount / steps;
+  let collided = false;
+
+  for (let i = 0; i < steps; i += 1) {
+    camera.position[axis] += stepAmount;
+    if (!hasSolidCollision()) continue;
+    camera.position[axis] -= stepAmount;
+    collided = true;
+    break;
+  }
+
+  return collided;
+}
+
+function isPlayerGrounded() {
+  const probe = camera.position.clone();
+  probe.y -= 0.05;
+  return hasSolidCollision(probe);
 }
 
 function closeMapContextMenu() {
@@ -927,20 +989,23 @@ function moveCamera(dt) {
   forward.set(Math.sin(yaw), 0, Math.cos(yaw));
   right.crossVectors(forward, up).negate();
 
-  camera.position.addScaledVector(forward, -velocity.z);
-  camera.position.addScaledVector(right, velocity.x);
+  const moveX = right.x * velocity.x - forward.x * velocity.z;
+  const moveZ = right.z * velocity.x - forward.z * velocity.z;
+  moveWithCollisions('x', moveX);
+  moveWithCollisions('z', moveZ);
 
   if (flyMode) {
-    camera.position.y += velocity.y;
+    moveWithCollisions('y', velocity.y);
     verticalVelocity = 0;
   } else {
     verticalVelocity -= GRAVITY * dt;
-    camera.position.y += verticalVelocity * dt;
-    const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
-    if (camera.position.y <= groundLevel) {
-      camera.position.y = groundLevel;
+    const hitVertical = moveWithCollisions('y', verticalVelocity * dt);
+    if (hitVertical) {
       verticalVelocity = 0;
     }
+
+    const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
+    if (!hasSolidCollision() && camera.position.y < groundLevel) camera.position.y = groundLevel;
   }
 
   camera.position.x = THREE.MathUtils.clamp(camera.position.x, -20, WORLD_SIZE + 20);
@@ -1195,9 +1260,7 @@ window.addEventListener('keydown', (event) => {
       verticalVelocity = 0;
       setModeStatus();
     } else if (!flyMode) {
-      const groundLevel = groundLevelAt(camera.position.x, camera.position.z);
-      const isGrounded = Math.abs(camera.position.y - groundLevel) < 0.05;
-      if (isGrounded) verticalVelocity = JUMP_SPEED;
+      if (isPlayerGrounded()) verticalVelocity = JUMP_SPEED;
     }
   }
 });
