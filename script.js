@@ -24,8 +24,9 @@ const BLOCK_APPLE = 8;
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
-const TREE_LEAF_CHANCE = 0.2;
+const TREE_LEAF_CHANCE = 0.4;
 const TREE_APPLE_CHANCE = 0.08;
+const SAND_WATER_RADIUS = 3;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -87,6 +88,7 @@ const materials = {
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
+const sandRadiusCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
 
 function worldColumnIndex(x, z) {
@@ -187,6 +189,31 @@ function hasWaterAt(x, z) {
   return waterHeight(x, z) >= terrainHeight(x, z);
 }
 
+function hasWaterInRadiusCached(x, z, radius) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = sandRadiusCache[cacheIndex];
+  if (cached >= 0) return cached === 1;
+
+  for (let dz = -radius; dz <= radius; dz += 1) {
+    const nz = clampedZ + dz;
+    if (nz < 0 || nz >= WORLD_SIZE) continue;
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      const nx = clampedX + dx;
+      if (nx < 0 || nx >= WORLD_SIZE) continue;
+      if (Math.abs(dx) + Math.abs(dz) > radius) continue;
+      if (hasWaterAt(nx, nz)) {
+        sandRadiusCache[cacheIndex] = 1;
+        return true;
+      }
+    }
+  }
+
+  sandRadiusCache[cacheIndex] = 0;
+  return false;
+}
+
 function isTreeCenter(wx, wz) {
   if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
   if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
@@ -282,8 +309,7 @@ function getVoxelTypeAt(wx, y, wz) {
 
   if (y > h) return BLOCK_AIR;
   if (y === h) {
-    const isNearWater = waterSurface >= h || (waterSurface >= 0 && waterSurface - h <= 1) || h <= OCEAN_LEVEL + 1;
-    return isNearWater ? BLOCK_SAND : BLOCK_GRASS;
+    return hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS) ? BLOCK_SAND : BLOCK_GRASS;
   }
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
