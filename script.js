@@ -42,6 +42,14 @@ const optionStartFly = document.getElementById('option-start-fly');
 const worldTitleEl = document.getElementById('world-title');
 const backHomeBtn = document.getElementById('back-home-btn');
 const timeSpeedButtons = [...document.querySelectorAll('[data-time-speed]')];
+const miniMapEl = document.getElementById('mini-map');
+const miniMapCanvas = document.getElementById('mini-map-canvas');
+const miniMapCtx = miniMapCanvas.getContext('2d');
+const fullMapOverlayEl = document.getElementById('full-map-overlay');
+const fullMapCanvas = document.getElementById('full-map-canvas');
+const fullMapCtx = fullMapCanvas.getContext('2d');
+const closeMapBtn = document.getElementById('close-map-btn');
+const mapContextMenuEl = document.getElementById('map-context-menu');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -89,6 +97,10 @@ let worldActive = false;
 let currentWorld = null;
 let timeSpeed = 1;
 let dayPhase = 0.18;
+let mapOpen = false;
+let mapContextPoint = null;
+
+const PIN_CLICK_RADIUS_WORLD = 10;
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
@@ -105,6 +117,27 @@ function loadWorldSaves() {
 
 function saveWorldSaves(worlds) {
   localStorage.setItem(WORLD_SAVE_KEY, JSON.stringify(worlds));
+}
+
+function ensureWorldPins(worldData) {
+  if (!worldData.pins || !Array.isArray(worldData.pins)) worldData.pins = [];
+  return worldData.pins;
+}
+
+function updateCurrentWorld(mutator) {
+  if (!currentWorld) return;
+  const worlds = loadWorldSaves();
+  const idx = worlds.findIndex((w) => w.id === currentWorld.id);
+  if (idx < 0) return;
+  ensureWorldPins(worlds[idx]);
+  mutator(worlds[idx]);
+  saveWorldSaves(worlds);
+  currentWorld = worlds[idx];
+}
+
+function deleteWorldById(worldId) {
+  const worlds = loadWorldSaves().filter((w) => w.id !== worldId);
+  saveWorldSaves(worlds);
 }
 
 function loadOptions() {
@@ -578,6 +611,106 @@ function groundLevelAt(x, z) {
   return terrainHeight(tx, tz) + PLAYER_HEIGHT;
 }
 
+function closeMapContextMenu() {
+  mapContextMenuEl.classList.add('hidden');
+  mapContextMenuEl.innerHTML = '';
+  mapContextPoint = null;
+}
+
+function worldToMapPixel(x, z, size) {
+  const px = (THREE.MathUtils.clamp(x, 0, WORLD_SIZE) / WORLD_SIZE) * size;
+  const pz = (THREE.MathUtils.clamp(z, 0, WORLD_SIZE) / WORLD_SIZE) * size;
+  return { px, pz };
+}
+
+function mapPixelToWorld(event, targetCanvas) {
+  const rect = targetCanvas.getBoundingClientRect();
+  const nx = (event.clientX - rect.left) / rect.width;
+  const nz = (event.clientY - rect.top) / rect.height;
+  const x = THREE.MathUtils.clamp(nx * WORLD_SIZE, 0, WORLD_SIZE - 1);
+  const z = THREE.MathUtils.clamp(nz * WORLD_SIZE, 0, WORLD_SIZE - 1);
+  return { x, z };
+}
+
+function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
+  if (!ctx) return;
+  const size = targetCanvas.width;
+  ctx.clearRect(0, 0, size, size);
+
+  const step = Math.max(1, Math.floor(2 / scale));
+  for (let z = 0; z < WORLD_SIZE; z += step) {
+    for (let x = 0; x < WORLD_SIZE; x += step) {
+      const h = terrainHeight(x, z);
+      const water = waterHeight(x, z);
+      let color = '#4f8f3e';
+      if (water >= h) color = '#346fba';
+      else if (h > OCEAN_LEVEL + 9) color = '#6f7b85';
+      else if (h > OCEAN_LEVEL + 4) color = '#59984a';
+      else if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) color = '#d1bf88';
+
+      const pt = worldToMapPixel(x, z, size);
+      ctx.fillStyle = color;
+      ctx.fillRect(pt.px, pt.pz, Math.max(1, step * size / WORLD_SIZE), Math.max(1, step * size / WORLD_SIZE));
+    }
+  }
+
+  if (currentWorld) {
+    for (const pin of ensureWorldPins(currentWorld)) {
+      const pt = worldToMapPixel(pin.x, pin.z, size);
+      ctx.fillStyle = '#ff4f4f';
+      ctx.beginPath();
+      ctx.arc(pt.px, pt.pz, Math.max(2, 3 * scale), 0, Math.PI * 2);
+      ctx.fill();
+      if (scale > 1.3) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.fillText(pin.name, pt.px + 7, pt.pz - 6);
+      }
+    }
+  }
+
+  const playerPoint = worldToMapPixel(camera.position.x, camera.position.z, size);
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(playerPoint.px, playerPoint.pz, Math.max(2.5, 4 * scale), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawMaps() {
+  if (!worldActive) return;
+  drawMapToCanvas(miniMapCtx, miniMapCanvas, 0.7);
+  if (mapOpen) drawMapToCanvas(fullMapCtx, fullMapCanvas, 1.8);
+}
+
+function setMapOpen(nextOpen) {
+  mapOpen = nextOpen;
+  fullMapOverlayEl.classList.toggle('hidden', !mapOpen);
+  if (!mapOpen) closeMapContextMenu();
+}
+
+function tryGetPinAt(x, z) {
+  if (!currentWorld) return null;
+  let closest = null;
+  let closestDist = Infinity;
+  for (const pin of ensureWorldPins(currentWorld)) {
+    const dist = Math.hypot(pin.x - x, pin.z - z);
+    if (dist < PIN_CLICK_RADIUS_WORLD && dist < closestDist) {
+      closest = pin;
+      closestDist = dist;
+    }
+  }
+  return closest;
+}
+
+function teleportToWorldPoint(x, z) {
+  camera.position.x = x;
+  camera.position.z = z;
+  if (!flyMode) {
+    camera.position.y = groundLevelAt(x, z);
+    verticalVelocity = 0;
+  }
+}
+
 function setModeStatus() {
   if (!worldActive) return;
   if (!pointerLocked) {
@@ -586,7 +719,7 @@ function setModeStatus() {
   }
 
   const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
-  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | Time ${timeSpeed}x | Chunks ${chunkManager.chunks.size}`;
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | Time ${timeSpeed}x | Press M for map`;
 }
 
 function setTimeSpeed(speed) {
@@ -618,7 +751,7 @@ function updateDayNight(dt) {
 }
 
 function moveCamera(dt) {
-  if (!worldActive) return;
+  if (!worldActive || mapOpen) return;
 
   moveInput.set(0, 0, 0);
   if (activeKeys.has('KeyW')) moveInput.z += 1;
@@ -675,16 +808,20 @@ function enterHomeMenu() {
   worldActive = false;
   homeMenuEl.classList.remove('hidden');
   worldHudEl.classList.add('hidden');
+  miniMapEl.classList.add('hidden');
+  setMapOpen(false);
   if (document.pointerLockElement) document.exitPointerLock();
   setModeStatus();
 }
 
 function startWorld(worldData) {
   currentWorld = worldData;
+  ensureWorldPins(currentWorld);
   worldTitleEl.textContent = `World: ${worldData.name}`;
   worldActive = true;
   homeMenuEl.classList.add('hidden');
   worldHudEl.classList.remove('hidden');
+  miniMapEl.classList.remove('hidden');
 
   setWorldSeed(worldData.seed);
   resetWorldCaches();
@@ -717,6 +854,7 @@ function createWorld(name) {
     seed: hashStringToSeed(`${trimmed}-${now}`),
     createdAt: now,
     lastPlayedAt: now,
+    pins: [],
   };
   worlds.unshift(worldData);
   saveWorldSaves(worlds);
@@ -742,12 +880,27 @@ function renderWorldList() {
     const meta = document.createElement('div');
     meta.innerHTML = `<strong>${worldData.name}</strong><br><small>Seed ${worldData.seed}</small>`;
 
+    const worldActions = document.createElement('div');
+    worldActions.className = 'world-actions';
+
     const playButton = document.createElement('button');
     playButton.type = 'button';
     playButton.textContent = 'Play';
     playButton.addEventListener('click', () => startWorld(worldData));
 
-    card.append(meta, playButton);
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'danger';
+    deleteButton.textContent = 'Delete';
+    deleteButton.addEventListener('click', () => {
+      const ok = window.confirm(`Delete world "${worldData.name}"?`);
+      if (!ok) return;
+      deleteWorldById(worldData.id);
+      renderWorldList();
+    });
+
+    worldActions.append(playButton, deleteButton);
+    card.append(meta, worldActions);
     worldListEl.append(card);
   }
 }
@@ -777,8 +930,89 @@ timeSpeedButtons.forEach((button) => {
   button.addEventListener('click', () => setTimeSpeed(Number(button.dataset.timeSpeed)));
 });
 
+closeMapBtn.addEventListener('click', () => setMapOpen(false));
+
+fullMapOverlayEl.addEventListener('click', (event) => {
+  if (event.target === fullMapOverlayEl) setMapOpen(false);
+});
+
+fullMapCanvas.addEventListener('click', (event) => {
+  if (!worldActive) return;
+  closeMapContextMenu();
+  const { x, z } = mapPixelToWorld(event, fullMapCanvas);
+  teleportToWorldPoint(x, z);
+  drawMaps();
+});
+
+fullMapCanvas.addEventListener('contextmenu', (event) => {
+  event.preventDefault();
+  if (!worldActive) return;
+
+  const { x, z } = mapPixelToWorld(event, fullMapCanvas);
+  mapContextPoint = { x, z };
+  const clickedPin = tryGetPinAt(x, z);
+  mapContextMenuEl.innerHTML = '';
+
+  const addPinBtn = document.createElement('button');
+  addPinBtn.type = 'button';
+  addPinBtn.textContent = 'Pin this place';
+  addPinBtn.addEventListener('click', () => {
+    const defaultName = `Pin ${ensureWorldPins(currentWorld).length + 1}`;
+    const pinName = window.prompt('Name this pin:', defaultName);
+    if (!pinName || !pinName.trim()) return;
+    updateCurrentWorld((worldData) => {
+      ensureWorldPins(worldData).push({
+        id: `p-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        name: pinName.trim().slice(0, 32),
+        x,
+        z,
+      });
+    });
+    closeMapContextMenu();
+    drawMaps();
+  });
+  mapContextMenuEl.append(addPinBtn);
+
+  if (clickedPin) {
+    const removePinBtn = document.createElement('button');
+    removePinBtn.type = 'button';
+    removePinBtn.textContent = `Remove pin: ${clickedPin.name}`;
+    removePinBtn.addEventListener('click', () => {
+      updateCurrentWorld((worldData) => {
+        worldData.pins = ensureWorldPins(worldData).filter((pin) => pin.id !== clickedPin.id);
+      });
+      closeMapContextMenu();
+      drawMaps();
+    });
+    mapContextMenuEl.append(removePinBtn);
+  }
+
+  mapContextMenuEl.classList.remove('hidden');
+  mapContextMenuEl.style.left = `${event.clientX}px`;
+  mapContextMenuEl.style.top = `${event.clientY}px`;
+});
+
+window.addEventListener('click', (event) => {
+  if (!mapContextMenuEl.contains(event.target) && event.target !== fullMapCanvas) {
+    closeMapContextMenu();
+  }
+});
+
 window.addEventListener('keydown', (event) => {
   if (!worldActive) return;
+
+  if (event.code === 'KeyM' && !event.repeat) {
+    setMapOpen(!mapOpen);
+    drawMaps();
+    return;
+  }
+
+  if (event.code === 'Escape' && mapOpen) {
+    setMapOpen(false);
+    return;
+  }
+
+  if (mapOpen) return;
   activeKeys.add(event.code);
 
   const isInitialKeydown = !event.repeat;
@@ -810,7 +1044,7 @@ window.addEventListener('keyup', (event) => {
 });
 
 canvas.addEventListener('click', async () => {
-  if (!worldActive || document.pointerLockElement) return;
+  if (!worldActive || mapOpen || document.pointerLockElement) return;
   await canvas.requestPointerLock({ unadjustedMovement: true }).catch(() => {});
 });
 
@@ -845,6 +1079,7 @@ function tick(now) {
   if (worldActive) {
     chunkManager.update(camera);
     setModeStatus();
+    drawMaps();
   }
   renderer.render(scene, camera);
   requestAnimationFrame(tick);

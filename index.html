@@ -61,6 +61,24 @@
       <button id="back-home-btn" type="button" class="back-btn">Back to Home</button>
     </div>
 
-    <script type="module" src="script.js?v=world-menu-daynight-1"></script>
+    <div id="mini-map" class="map-panel hidden">
+      <h3>World Map</h3>
+      <canvas id="mini-map-canvas" width="180" height="180"></canvas>
+      <p>Press <strong>M</strong> for full map</p>
+    </div>
+
+    <div id="full-map-overlay" class="map-overlay hidden">
+      <div class="map-card">
+        <div class="map-card-top">
+          <h2>World Map</h2>
+          <button id="close-map-btn" type="button">Close</button>
+        </div>
+        <p>Left-click to teleport. Right-click for options.</p>
+        <canvas id="full-map-canvas" width="640" height="640"></canvas>
+      </div>
+      <div id="map-context-menu" class="map-context-menu hidden"></div>
+    </div>
+
+    <script type="module" src="script.js?v=world-map-pins-1"></script>
   </body>
 </html>

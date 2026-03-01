@@ -152,3 +152,99 @@ button:hover {
   width: 100%;
   background: #666;
 }
+
+.map-panel {
+  position: fixed;
+  top: 0.9rem;
+  right: 0.9rem;
+  background: rgba(8, 12, 18, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 0.7rem;
+  width: 220px;
+  color: #eef6ff;
+}
+
+.map-panel h3 {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+}
+
+.map-panel p {
+  margin: 0.45rem 0 0;
+  font-size: 0.83rem;
+  color: #bfd1e9;
+}
+
+#mini-map-canvas,
+#full-map-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #2e4f72;
+}
+
+.map-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 12, 0.7);
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+
+.map-card {
+  width: min(720px, 92vw);
+  background: rgba(8, 12, 18, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  padding: 0.9rem;
+  color: #ecf3ff;
+}
+
+.map-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.map-card h2 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.map-card p {
+  margin: 0.45rem 0 0.65rem;
+  color: #bdd0ea;
+  font-size: 0.9rem;
+}
+
+.map-context-menu {
+  position: fixed;
+  min-width: 170px;
+  background: rgba(8, 12, 18, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 0.3rem;
+  z-index: 30;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.map-context-menu button {
+  text-align: left;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.world-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.world-actions .danger {
+  background: #9c3c3c;
+}
