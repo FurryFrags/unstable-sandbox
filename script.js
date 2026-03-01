@@ -232,9 +232,9 @@ function getTerrainHeightCached(x, z) {
   const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
   const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
   const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
-  const mountainMask = Math.max(0, smoothNoise(clampedX * 0.02 + 140, clampedZ * 0.02 + 70) - 0.68) / 0.32;
-  const mountainRidge = smoothNoise(clampedX * 0.045 + 220, clampedZ * 0.045 + 160);
-  const mountainHeight = mountainMask * mountainRidge * 16;
+  const mountainMask = Math.max(0, smoothNoise(clampedX * 0.013 + 140, clampedZ * 0.013 + 70) - 0.56) / 0.44;
+  const mountainRidge = smoothNoise(clampedX * 0.028 + 220, clampedZ * 0.028 + 160);
+  const mountainHeight = mountainMask * (0.55 + mountainRidge) * 28;
   const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail + mountainHeight)));
   terrainHeightCache[cacheIndex] = height;
   return height;
@@ -767,10 +767,25 @@ function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
   }
 
   const playerPoint = worldToMapPixel(camera.position.x, camera.position.z, size);
-  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#d8ecff';
+  ctx.lineWidth = Math.max(1.2, 1.3 * scale);
   ctx.beginPath();
-  ctx.arc(playerPoint.px, playerPoint.pz, Math.max(2.5, 4 * scale), 0, Math.PI * 2);
+  ctx.arc(playerPoint.px, playerPoint.pz, Math.max(3, 4.7 * scale), 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = '#2f84ff';
+  ctx.beginPath();
+  ctx.arc(playerPoint.px, playerPoint.pz, Math.max(2.2, 3.6 * scale), 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.strokeStyle = '#0d47a1';
+  ctx.lineWidth = Math.max(0.9, 0.9 * scale);
+  ctx.beginPath();
+  ctx.moveTo(playerPoint.px, playerPoint.pz - Math.max(4.4, 6.2 * scale));
+  ctx.lineTo(playerPoint.px + Math.max(1.6, 2.2 * scale), playerPoint.pz - Math.max(1.2, 1.7 * scale));
+  ctx.lineTo(playerPoint.px - Math.max(1.6, 2.2 * scale), playerPoint.pz - Math.max(1.2, 1.7 * scale));
+  ctx.closePath();
+  ctx.stroke();
 }
 
 function drawMaps() {
