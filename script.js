@@ -20,11 +20,14 @@ const BLOCK_GRASS = 3;
 const BLOCK_WOOD = 4;
 const BLOCK_LEAF = 5;
 const BLOCK_WATER = 6;
+const BLOCK_SAND = 7;
+const BLOCK_APPLE = 8;
 
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
 const TREE_LEAF_CHANCE = 0.2;
+const TREE_APPLE_CHANCE = 0.08;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -80,6 +83,8 @@ const materials = {
     depthWrite: false,
     side: THREE.DoubleSide,
   }),
+  [BLOCK_SAND]: new THREE.MeshStandardMaterial({ color: '#dfcb8d', roughness: 0.96, side: THREE.DoubleSide }),
+  [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
 };
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
@@ -240,6 +245,14 @@ function treeBlockAt(wx, y, wz) {
       const isInLeafLayer = y >= leafBottom && y <= leafTop;
       const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
+      const isApplePoint = y === leafBottom && (dx + dz === TREE_CANOPY_RADIUS + 1 || (dx === TREE_CANOPY_RADIUS && dz === TREE_CANOPY_RADIUS));
+      if (isApplePoint) {
+        const hasApple = hash2(wx * 0.69 + y * 0.21 + 13.5, wz * 0.94 + y * 0.53 + 44.1) < TREE_APPLE_CHANCE;
+        if (hasApple) {
+          return BLOCK_APPLE;
+        }
+      }
+
       const hasLeaf = hash2(wx * 1.91 + y * 0.47 + 31.7, wz * 1.37 + y * 0.73 + 19.3) < TREE_LEAF_CHANCE;
       if (isInLeafLayer && isInCanopy && !isTrunkCore && hasLeaf) {
         return BLOCK_LEAF;
@@ -261,7 +274,10 @@ function getVoxelTypeAt(wx, y, wz) {
   if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
 
   if (y > h) return BLOCK_AIR;
-  if (y === h) return waterSurface >= h ? BLOCK_DIRT : BLOCK_GRASS;
+  if (y === h) {
+    const isNearWater = waterSurface >= h || (waterSurface >= 0 && waterSurface - h <= 1) || h <= OCEAN_LEVEL + 1;
+    return isNearWater ? BLOCK_SAND : BLOCK_GRASS;
+  }
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
 }
@@ -397,7 +413,7 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER]) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE]) {
       const geometry = buildMaterialGreedyGeometry(voxels, type);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
