@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 9;
-const MAX_HEIGHT = Math.round(16 * 1.3);
+const MAX_HEIGHT = Math.round(16 * 1.3 * 5);
 const OCEAN_LEVEL = 8;
 
 const CHUNK_SIZE = 16;
@@ -32,7 +32,7 @@ const TREE_DENSITY_THRESHOLD = 0.84;
 const TREE_LEAF_CHANCE = 0.8;
 const TREE_APPLE_CHANCE = 0.08;
 const SAND_WATER_RADIUS = 3;
-const MOUNTAIN_HEIGHT_THRESHOLD = MAX_HEIGHT - 4;
+const MOUNTAIN_HEIGHT_THRESHOLD = MAX_HEIGHT - 20;
 const CAVE_MIN_Y = 3;
 const CAVE_SCALE = 0.16;
 const CAVE_THRESHOLD = 0.78;
@@ -89,7 +89,7 @@ const world = new THREE.Group();
 scene.add(world);
 
 const materials = {
-  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9, side: THREE.DoubleSide }),
+  [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#5d6875', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1, side: THREE.DoubleSide }),
   [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ color: '#7b5534', roughness: 0.95, side: THREE.DoubleSide }),
@@ -97,7 +97,7 @@ const materials = {
   [BLOCK_WATER]: new THREE.MeshStandardMaterial({ color: '#3e8fe3', roughness: 0.2, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide }),
   [BLOCK_SAND]: new THREE.MeshStandardMaterial({ color: '#dfcb8d', roughness: 0.96, side: THREE.DoubleSide }),
   [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
-  [BLOCK_SNOW]: new THREE.MeshStandardMaterial({ color: '#f4f7ff', roughness: 0.88, side: THREE.DoubleSide }),
+  [BLOCK_SNOW]: new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78, side: THREE.DoubleSide }),
 };
 
 let worldSeed = 1;
@@ -697,8 +697,8 @@ function sampleTerrainColorAtWorld(x, z) {
   const biome = biomeAt(x, z);
 
   if (water >= h) return '#346fba';
-  if (h > OCEAN_LEVEL + 9) return '#6f7b85';
-  if (biome === BIOME_SNOW) return '#e6ecff';
+  if (h > OCEAN_LEVEL + 9) return '#596675';
+  if (biome === BIOME_SNOW) return '#f4f9ff';
   if (biome === BIOME_DESERT) return '#dcbf72';
   if (h > OCEAN_LEVEL + 4) return '#59984a';
   if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) return '#d1bf88';
