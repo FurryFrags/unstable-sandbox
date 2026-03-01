@@ -32,6 +32,10 @@ const TREE_DENSITY_THRESHOLD = 0.84;
 const TREE_LEAF_CHANCE = 0.8;
 const TREE_APPLE_CHANCE = 0.08;
 const SAND_WATER_RADIUS = 3;
+const MOUNTAIN_HEIGHT_THRESHOLD = MAX_HEIGHT - 4;
+const CAVE_MIN_Y = 3;
+const CAVE_SCALE = 0.16;
+const CAVE_THRESHOLD = 0.78;
 
 const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
 const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
@@ -228,7 +232,10 @@ function getTerrainHeightCached(x, z) {
   const broad = smoothNoise(clampedX * 0.05, clampedZ * 0.05) * 10;
   const rolling = smoothNoise(clampedX * 0.12 + 42, clampedZ * 0.12 + 12) * 6;
   const detail = smoothNoise(clampedX * 0.23 + 90, clampedZ * 0.23 + 37) * 2;
-  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail)));
+  const mountainMask = Math.max(0, smoothNoise(clampedX * 0.02 + 140, clampedZ * 0.02 + 70) - 0.68) / 0.32;
+  const mountainRidge = smoothNoise(clampedX * 0.045 + 220, clampedZ * 0.045 + 160);
+  const mountainHeight = mountainMask * mountainRidge * 16;
+  const height = Math.max(2, Math.min(MAX_HEIGHT, Math.round(2 + broad + rolling + detail + mountainHeight)));
   terrainHeightCache[cacheIndex] = height;
   return height;
 }
@@ -422,9 +429,19 @@ function getVoxelTypeAt(wx, y, wz) {
   if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
 
   if (y > h) return BLOCK_AIR;
+
+  if (y > CAVE_MIN_Y && y < h - 1) {
+    const caveNoiseA = smoothNoise(wx * CAVE_SCALE + y * 0.12 + 300, wz * CAVE_SCALE + y * 0.09 + 500);
+    const caveNoiseB = smoothNoise(wx * (CAVE_SCALE * 1.8) + y * 0.2 + 30, wz * (CAVE_SCALE * 1.8) + y * 0.16 + 90);
+    const caveDensity = caveNoiseA * 0.7 + caveNoiseB * 0.3;
+    if (caveDensity > CAVE_THRESHOLD) return BLOCK_AIR;
+  }
+
+  if (y <= 1) return BLOCK_STONE;
+
   if (y === h) {
     const biome = biomeAt(wx, wz);
-    if (biome === BIOME_SNOW) return BLOCK_SNOW;
+    if (biome === BIOME_SNOW || h >= MOUNTAIN_HEIGHT_THRESHOLD) return BLOCK_SNOW;
     if (biome === BIOME_DESERT || hasWaterInRadiusCached(wx, wz, SAND_WATER_RADIUS)) return BLOCK_SAND;
     return BLOCK_GRASS;
   }
