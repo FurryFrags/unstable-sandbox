@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
-const MAX_HEIGHT = 16 * 3;
+const MAX_HEIGHT = Math.round(16 * 1.3);
 const SEA_LEVEL = 4;
 
 const CHUNK_SIZE = 16;
@@ -16,10 +16,6 @@ const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
 const BLOCK_WOOD = 4;
 const BLOCK_LEAF = 5;
-
-const TREE_SPACING = 14;
-const TREE_CANOPY_RADIUS = 2;
-const TREE_DENSITY_THRESHOLD = 0.92;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -110,7 +106,7 @@ function terrainHeight(x, z) {
 
 function isTreeCenter(wx, wz) {
   if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
-  if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
+  if (wx % 6 !== 0 || wz % 6 !== 0) return false;
 
   const centerHeight = terrainHeight(wx, wz);
   if (centerHeight <= SEA_LEVEL + 1) return false;
@@ -128,17 +124,17 @@ function isTreeCenter(wx, wz) {
     return false;
   }
 
-  return hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > TREE_DENSITY_THRESHOLD;
+  return hash2(wx * 0.73 + 5.7, wz * 0.73 + 17.1) > 0.52;
 }
 
 function treeBlockAt(wx, y, wz) {
-  const minTreeX = Math.floor((wx - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const maxTreeX = Math.ceil((wx + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const minTreeZ = Math.floor((wz - TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
-  const maxTreeZ = Math.ceil((wz + TREE_CANOPY_RADIUS) / TREE_SPACING) * TREE_SPACING;
+  const minTreeX = Math.floor((wx - 2) / 6) * 6;
+  const maxTreeX = Math.ceil((wx + 2) / 6) * 6;
+  const minTreeZ = Math.floor((wz - 2) / 6) * 6;
+  const maxTreeZ = Math.ceil((wz + 2) / 6) * 6;
 
-  for (let tx = minTreeX; tx <= maxTreeX; tx += TREE_SPACING) {
-    for (let tz = minTreeZ; tz <= maxTreeZ; tz += TREE_SPACING) {
+  for (let tx = minTreeX; tx <= maxTreeX; tx += 6) {
+    for (let tz = minTreeZ; tz <= maxTreeZ; tz += 6) {
       if (!isTreeCenter(tx, tz)) continue;
 
       const trunkBaseY = terrainHeight(tx, tz) + 1;
@@ -154,7 +150,7 @@ function treeBlockAt(wx, y, wz) {
       const leafBottom = trunkTopY - 2;
       const leafTop = trunkTopY + 1;
       const isInLeafLayer = y >= leafBottom && y <= leafTop;
-      const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
+      const isInCanopy = dx <= 2 && dz <= 2 && dx + dz <= 3;
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
       if (isInLeafLayer && isInCanopy && !isTrunkCore) {
         return BLOCK_LEAF;
