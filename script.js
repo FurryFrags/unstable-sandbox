@@ -2,7 +2,8 @@ import * as THREE from 'three';
 
 const WORLD_SIZE = 84 * 3;
 const MAX_HEIGHT = Math.round(16 * 1.3);
-const SEA_LEVEL = 4;
+const OCEAN_LEVEL = 6;
+const RIVER_LEVEL = 5;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
@@ -17,6 +18,7 @@ const BLOCK_DIRT = 2;
 const BLOCK_GRASS = 3;
 const BLOCK_WOOD = 4;
 const BLOCK_LEAF = 5;
+const BLOCK_WATER = 6;
 
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
@@ -34,7 +36,6 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#87b9ff');
-scene.fog = new THREE.Fog('#87b9ff', 30, 140);
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 320);
 camera.position.set(12, 18, 12);
@@ -64,29 +65,24 @@ scene.add(sunVisual);
 const world = new THREE.Group();
 scene.add(world);
 
-const water = new THREE.Mesh(
-  new THREE.PlaneGeometry(WORLD_SIZE + 30, WORLD_SIZE + 30),
-  new THREE.MeshBasicMaterial({
-    color: '#3e8fe3',
-    transparent: true,
-    opacity: 0.38,
-    depthWrite: false,
-  }),
-);
-water.rotation.x = -Math.PI * 0.5;
-water.position.set((WORLD_SIZE - 1) * 0.5, SEA_LEVEL + 0.5, (WORLD_SIZE - 1) * 0.5);
-water.frustumCulled = false;
-scene.add(water);
-
 const materials = {
   [BLOCK_STONE]: new THREE.MeshStandardMaterial({ color: '#7f858f', roughness: 0.9, side: THREE.DoubleSide }),
   [BLOCK_DIRT]: new THREE.MeshStandardMaterial({ color: '#805d3b', roughness: 1, side: THREE.DoubleSide }),
   [BLOCK_GRASS]: new THREE.MeshStandardMaterial({ color: '#58a83f', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_WOOD]: new THREE.MeshStandardMaterial({ color: '#7b5534', roughness: 0.95, side: THREE.DoubleSide }),
   [BLOCK_LEAF]: new THREE.MeshStandardMaterial({ color: '#3f8f3f', roughness: 0.9, side: THREE.DoubleSide }),
+  [BLOCK_WATER]: new THREE.MeshStandardMaterial({
+    color: '#3e8fe3',
+    roughness: 0.2,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }),
 };
 
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
+const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
 
 function worldColumnIndex(x, z) {
@@ -137,6 +133,50 @@ function terrainHeight(x, z) {
   return getTerrainHeightCached(x, z);
 }
 
+function getWaterHeightCached(x, z) {
+  const clampedX = THREE.MathUtils.clamp(x, 0, WORLD_SIZE - 1);
+  const clampedZ = THREE.MathUtils.clamp(z, 0, WORLD_SIZE - 1);
+  const cacheIndex = worldColumnIndex(clampedX, clampedZ);
+  const cached = waterHeightCache[cacheIndex];
+  if (cached >= 0) return cached - 1;
+
+  const h = terrainHeight(clampedX, clampedZ);
+  const continental = smoothNoise(clampedX * 0.016 + 80, clampedZ * 0.016 + 11);
+  const deepOceanSignal = smoothNoise(clampedX * 0.01 + 25, clampedZ * 0.01 + 91);
+  const lakeSignal = smoothNoise(clampedX * 0.08 + 44, clampedZ * 0.08 + 59);
+  const riverField = smoothNoise(clampedX * 0.05 + 132, clampedZ * 0.05 + 73);
+  const riverFieldWarp = smoothNoise(clampedX * 0.11 + 211, clampedZ * 0.11 + 151);
+  const riverDistance = Math.abs(riverField - riverFieldWarp);
+
+  let computedWaterHeight = -1;
+
+  const oceanBlend = deepOceanSignal * 0.65 + continental * 0.35;
+  if (oceanBlend < 0.34 && h <= OCEAN_LEVEL + 2) {
+    computedWaterHeight = Math.max(h, OCEAN_LEVEL + Math.round((0.34 - oceanBlend) * 3));
+  }
+
+  if (riverDistance < 0.045 && h <= MAX_HEIGHT - 3) {
+    computedWaterHeight = Math.max(computedWaterHeight, Math.max(h, RIVER_LEVEL));
+  }
+
+  if (lakeSignal < 0.15 && h >= RIVER_LEVEL - 1 && h <= MAX_HEIGHT - 2) {
+    const lakeDepth = Math.round((0.15 - lakeSignal) * 8);
+    computedWaterHeight = Math.max(computedWaterHeight, h + Math.min(3, Math.max(1, lakeDepth)));
+  }
+
+  const encodedHeight = computedWaterHeight < 0 ? 0 : computedWaterHeight + 1;
+  waterHeightCache[cacheIndex] = encodedHeight;
+  return computedWaterHeight;
+}
+
+function waterHeight(x, z) {
+  return getWaterHeightCached(x, z);
+}
+
+function hasWaterAt(x, z) {
+  return waterHeight(x, z) >= terrainHeight(x, z);
+}
+
 function isTreeCenter(wx, wz) {
   if (wx <= 2 || wz <= 2 || wx >= WORLD_SIZE - 3 || wz >= WORLD_SIZE - 3) return false;
   if (wx % TREE_SPACING !== 0 || wz % TREE_SPACING !== 0) return false;
@@ -145,7 +185,7 @@ function isTreeCenter(wx, wz) {
   if (treeCenterCache.has(cacheKey)) return treeCenterCache.get(cacheKey);
 
   const centerHeight = terrainHeight(wx, wz);
-  if (centerHeight <= SEA_LEVEL + 1) {
+  if (centerHeight <= OCEAN_LEVEL + 1 || hasWaterAt(wx, wz)) {
     treeCenterCache.set(cacheKey, false);
     return false;
   }
@@ -212,12 +252,15 @@ function treeBlockAt(wx, y, wz) {
 function getVoxelTypeAt(wx, y, wz) {
   if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE || y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
   const h = terrainHeight(wx, wz);
+  const waterSurface = waterHeight(wx, wz);
+
+  if (y > h && y <= waterSurface) return BLOCK_WATER;
 
   const treeBlock = treeBlockAt(wx, y, wz);
   if (treeBlock !== BLOCK_AIR && y > h) return treeBlock;
 
   if (y > h) return BLOCK_AIR;
-  if (y === h) return h < SEA_LEVEL ? BLOCK_DIRT : BLOCK_GRASS;
+  if (y === h) return waterSurface >= h ? BLOCK_DIRT : BLOCK_GRASS;
   if (y >= h - 2) return BLOCK_DIRT;
   return BLOCK_STONE;
 }
@@ -353,7 +396,7 @@ class ChunkManager {
     group.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF]) {
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER]) {
       const geometry = buildMaterialGreedyGeometry(voxels, type);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
