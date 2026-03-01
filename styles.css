@@ -19,24 +19,37 @@ body {
   height: 100vh;
 }
 
+.hidden {
+  display: none !important;
+}
+
+.overlay-panel,
 .hud {
   position: fixed;
   top: 0.9rem;
   left: 0.9rem;
-  max-width: 360px;
-  background: rgba(8, 12, 18, 0.72);
+  max-width: 420px;
+  background: rgba(8, 12, 18, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 12px;
-  padding: 0.8rem 0.95rem;
+  padding: 0.9rem 1rem;
   backdrop-filter: blur(3px);
   color: #eef6ff;
 }
 
-.hud h1 {
+.overlay-panel h1,
+.hud h2 {
   margin: 0;
-  font-size: 1.08rem;
+  font-size: 1.1rem;
 }
 
+.overlay-panel h2,
+.hud h3 {
+  margin: 0.65rem 0 0.35rem;
+  font-size: 0.98rem;
+}
+
+.overlay-panel p,
 .hud p {
   margin: 0.4rem 0;
   color: #c8d6e9;
@@ -53,7 +66,89 @@ body {
 }
 
 #status {
-  margin-bottom: 0;
-  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.88rem;
   color: #93e8a3;
+}
+
+.world-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+}
+
+.world-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.5rem;
+}
+
+.world-card small {
+  color: #9db0c7;
+}
+
+.new-world-row {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+}
+
+button {
+  background: #3d83df;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #4d93ef;
+}
+
+.toggle {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.god-mode {
+  margin-top: 0.6rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.speed-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.speed-buttons button.active {
+  background: #67a6ff;
+  outline: 2px solid rgba(255, 255, 255, 0.45);
+}
+
+.back-btn {
+  margin-top: 0.8rem;
+  width: 100%;
+  background: #666;
 }

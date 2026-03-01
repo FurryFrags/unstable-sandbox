@@ -16,9 +16,30 @@
   <body>
     <canvas id="scene"></canvas>
 
-    <div class="hud">
+    <div id="home-menu" class="overlay-panel">
       <h1>Voxel Spectator Sandbox</h1>
-      <p>Procedural hills with sandy shores and apple trees in a minecraft-like world.</p>
+      <p>Choose a world, create a new one, then jump in.</p>
+
+      <section>
+        <h2>Worlds Saved</h2>
+        <div id="world-list" class="world-list"></div>
+        <div class="new-world-row">
+          <input id="new-world-name" type="text" maxlength="32" placeholder="New world name" />
+          <button id="create-world-btn" type="button">Create World</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Options</h2>
+        <label class="toggle">
+          <input id="option-start-fly" type="checkbox" />
+          Start in fly mode
+        </label>
+      </section>
+    </div>
+
+    <div id="world-hud" class="hud hidden">
+      <h2 id="world-title">World</h2>
       <ul>
         <li><strong>Click</strong> to lock mouse</li>
         <li><strong>WASD</strong> move</li>
@@ -26,8 +47,20 @@
         <li><strong>Esc</strong> unlock pointer</li>
       </ul>
       <p id="status">Loading world…</p>
+
+      <div class="god-mode">
+        <h3>God mode</h3>
+        <p>Time speed</p>
+        <div class="speed-buttons">
+          <button data-time-speed="1" type="button">1x</button>
+          <button data-time-speed="2" type="button">2x</button>
+          <button data-time-speed="5" type="button">5x</button>
+        </div>
+      </div>
+
+      <button id="back-home-btn" type="button" class="back-btn">Back to Home</button>
     </div>
 
-    <script type="module" src="script.js?v=tree-fix-4"></script>
+    <script type="module" src="script.js?v=world-menu-daynight-1"></script>
   </body>
 </html>
