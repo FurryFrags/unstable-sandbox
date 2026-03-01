@@ -99,6 +99,11 @@ let timeSpeed = 1;
 let dayPhase = 0.18;
 let mapOpen = false;
 let mapContextPoint = null;
+let mapStaticLayerMini = null;
+let mapStaticLayerFull = null;
+let lastMiniMapDrawAt = 0;
+
+const MINI_MAP_FPS = 18;
 
 const PIN_CLICK_RADIUS_WORLD = 10;
 
@@ -617,6 +622,47 @@ function closeMapContextMenu() {
   mapContextPoint = null;
 }
 
+function createScratchCanvas(size) {
+  const scratch = document.createElement('canvas');
+  scratch.width = size;
+  scratch.height = size;
+  return scratch;
+}
+
+function sampleTerrainColorAtWorld(x, z) {
+  const h = terrainHeight(x, z);
+  const water = waterHeight(x, z);
+
+  if (water >= h) return '#346fba';
+  if (h > OCEAN_LEVEL + 9) return '#6f7b85';
+  if (h > OCEAN_LEVEL + 4) return '#59984a';
+  if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) return '#d1bf88';
+  return '#4f8f3e';
+}
+
+function buildStaticMapLayer(size) {
+  const layerCanvas = createScratchCanvas(size);
+  const layerCtx = layerCanvas.getContext('2d');
+  if (!layerCtx) return null;
+
+  const blockSize = 1;
+  for (let pz = 0; pz < size; pz += blockSize) {
+    for (let px = 0; px < size; px += blockSize) {
+      const worldX = THREE.MathUtils.clamp(Math.floor((px / size) * WORLD_SIZE), 0, WORLD_SIZE - 1);
+      const worldZ = THREE.MathUtils.clamp(Math.floor((pz / size) * WORLD_SIZE), 0, WORLD_SIZE - 1);
+      layerCtx.fillStyle = sampleTerrainColorAtWorld(worldX, worldZ);
+      layerCtx.fillRect(px, pz, blockSize, blockSize);
+    }
+  }
+
+  return layerCanvas;
+}
+
+function rebuildMapStaticLayers() {
+  mapStaticLayerMini = buildStaticMapLayer(miniMapCanvas.width);
+  mapStaticLayerFull = buildStaticMapLayer(fullMapCanvas.width);
+}
+
 function worldToMapPixel(x, z, size) {
   const px = (THREE.MathUtils.clamp(x, 0, WORLD_SIZE) / WORLD_SIZE) * size;
   const pz = (THREE.MathUtils.clamp(z, 0, WORLD_SIZE) / WORLD_SIZE) * size;
@@ -635,24 +681,10 @@ function mapPixelToWorld(event, targetCanvas) {
 function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
   if (!ctx) return;
   const size = targetCanvas.width;
+  const staticLayer = targetCanvas === fullMapCanvas ? mapStaticLayerFull : mapStaticLayerMini;
+
   ctx.clearRect(0, 0, size, size);
-
-  const step = Math.max(1, Math.floor(2 / scale));
-  for (let z = 0; z < WORLD_SIZE; z += step) {
-    for (let x = 0; x < WORLD_SIZE; x += step) {
-      const h = terrainHeight(x, z);
-      const water = waterHeight(x, z);
-      let color = '#4f8f3e';
-      if (water >= h) color = '#346fba';
-      else if (h > OCEAN_LEVEL + 9) color = '#6f7b85';
-      else if (h > OCEAN_LEVEL + 4) color = '#59984a';
-      else if (hasWaterInRadiusCached(x, z, SAND_WATER_RADIUS)) color = '#d1bf88';
-
-      const pt = worldToMapPixel(x, z, size);
-      ctx.fillStyle = color;
-      ctx.fillRect(pt.px, pt.pz, Math.max(1, step * size / WORLD_SIZE), Math.max(1, step * size / WORLD_SIZE));
-    }
-  }
+  if (staticLayer) ctx.drawImage(staticLayer, 0, 0, size, size);
 
   if (currentWorld) {
     for (const pin of ensureWorldPins(currentWorld)) {
@@ -678,7 +710,11 @@ function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
 
 function drawMaps() {
   if (!worldActive) return;
-  drawMapToCanvas(miniMapCtx, miniMapCanvas, 0.7);
+  const now = performance.now();
+  if (now - lastMiniMapDrawAt >= 1000 / MINI_MAP_FPS) {
+    drawMapToCanvas(miniMapCtx, miniMapCanvas, 0.7);
+    lastMiniMapDrawAt = now;
+  }
   if (mapOpen) drawMapToCanvas(fullMapCtx, fullMapCanvas, 1.8);
 }
 
@@ -825,6 +861,8 @@ function startWorld(worldData) {
 
   setWorldSeed(worldData.seed);
   resetWorldCaches();
+  rebuildMapStaticLayers();
+  lastMiniMapDrawAt = 0;
   chunkManager.clear();
 
   camera.position.set(12, 30, 12);
