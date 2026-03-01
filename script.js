@@ -276,19 +276,16 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
     }
   }
 
-  const geometries = new Map();
-  for (const [type, buffer] of buffers) {
-    if (!buffer.positions.length) continue;
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(buffer.positions, 3));
-    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(buffer.normals, 3));
-    geometry.setIndex(buffer.indices);
-    geometry.computeBoundingSphere();
-    geometry.computeBoundingBox();
-    geometries.set(type, geometry);
-  }
+  if (!positions.length) return null;
 
-  return geometries;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  geometry.computeBoundingBox();
+
+  return geometry;
 }
 
 
