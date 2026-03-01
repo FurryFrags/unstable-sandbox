@@ -24,7 +24,7 @@ const statusEl = document.getElementById('status');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
+renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
@@ -329,16 +329,21 @@ function buildMaterialGreedyGeometry(voxels, materialType) {
     }
   }
 
-  if (!positions.length) return null;
+  const geometries = new Map();
+  for (const [type, buffer] of buffers) {
+    if (!buffer.positions.length) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(buffer.positions, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(buffer.normals, 3));
+    geometry.setIndex(buffer.indices);
+    geometry.computeBoundingSphere();
+    geometry.computeBoundingBox();
+    geometries.set(type, geometry);
+  }
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geometry.setIndex(indices);
-  geometry.computeBoundingSphere();
-  geometry.computeBoundingBox();
-  return geometry;
+  return geometries;
 }
+
 
 class ChunkManager {
   constructor(root) {
@@ -395,7 +400,7 @@ class ChunkManager {
       const geometry = buildMaterialGreedyGeometry(voxels, type);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
-      mesh.receiveShadow = true;
+      mesh.receiveShadow = false;
       mesh.castShadow = false;
       mesh.frustumCulled = true;
       group.add(mesh);
