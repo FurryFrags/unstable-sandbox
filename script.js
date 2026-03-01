@@ -21,7 +21,7 @@ const BLOCK_LEAF = 5;
 const TREE_SPACING = 6;
 const TREE_CANOPY_RADIUS = 1;
 const TREE_DENSITY_THRESHOLD = 0.84;
-const TREE_LEAF_CHANCE = 0.35;
+const TREE_LEAF_CHANCE = 0.2;
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -183,8 +183,8 @@ function treeBlockAt(wx, y, wz) {
 
       const dx = Math.abs(wx - tx);
       const dz = Math.abs(wz - tz);
-      const leafBottom = trunkTopY;
-      const leafTop = trunkTopY + 1;
+      const leafBottom = trunkTopY - 1;
+      const leafTop = trunkTopY;
       const isInLeafLayer = y >= leafBottom && y <= leafTop;
       const isInCanopy = dx <= TREE_CANOPY_RADIUS && dz <= TREE_CANOPY_RADIUS && dx + dz <= TREE_CANOPY_RADIUS + 1;
       const isTrunkCore = dx === 0 && dz === 0 && y <= trunkTopY;
