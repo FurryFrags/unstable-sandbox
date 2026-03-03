@@ -6,7 +6,8 @@ const OCEAN_LEVEL = 8;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = WORLD_CHUNKS;
+const RENDER_DISTANCE = Math.min(WORLD_CHUNKS, 18);
+const SPLAT_LOD_DISTANCE = 6;
 const SHADOW_CAST_DISTANCE = 2;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 const MAX_CHUNK_DATA_CACHE = 256;
@@ -72,13 +73,11 @@ const miniMapCanvas = document.getElementById('mini-map-canvas');
 const miniMapCtx = miniMapCanvas.getContext('2d');
 const fullMapOverlayEl = document.getElementById('full-map-overlay');
 const fullMapCanvas = document.getElementById('full-map-canvas');
-fullMapCanvas.width = WORLD_SIZE;
-fullMapCanvas.height = WORLD_SIZE;
 const fullMapCtx = fullMapCanvas.getContext('2d');
 const closeMapBtn = document.getElementById('close-map-btn');
 const mapContextMenuEl = document.getElementById('map-context-menu');
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = false;
@@ -148,7 +147,8 @@ let timeSpeed = 1;
 let dayPhase = 0.18;
 let mapOpen = false;
 let mapContextPoint = null;
-let mapStaticLayerWorld = null;
+let mapStaticLayerMini = null;
+let mapStaticLayerFull = null;
 let lastMiniMapDrawAt = 0;
 let lastStatusUpdateAt = -Infinity;
 let activeWorldGenProfile = DEFAULT_WORLD_GEN_PROFILE;
@@ -723,7 +723,7 @@ class ChunkManager {
     }
   }
 
-  buildChunk(cx, cz) {
+  buildChunk(cx, cz, distanceFromCamera = 0) {
     const key = this.key(cx, cz);
     if (this.chunks.has(key) || !this.inWorld(cx, cz)) return;
 
@@ -733,7 +733,7 @@ class ChunkManager {
     group.position.set(chunkOriginX, 0, chunkOriginZ);
 
     const meshes = [];
-    const mode = 'mesh';
+    const mode = distanceFromCamera > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
 
     if (mode === 'mesh') {
       const voxels = buildChunkVoxelData(cx, cz);
@@ -808,6 +808,7 @@ class ChunkManager {
     this.projectionView.multiplyMatrices(cameraObj.projectionMatrix, cameraObj.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
 
+    const chunksToSwap = [];
     for (const [, chunk] of this.chunks) {
       const dx = chunk.cx - camChunkX;
       const dz = chunk.cz - camChunkZ;
@@ -815,7 +816,8 @@ class ChunkManager {
       const castShadow = Math.max(Math.abs(dx), Math.abs(dz)) <= SHADOW_CAST_DISTANCE;
       for (const mesh of chunk.meshes) mesh.castShadow = castShadow;
 
-      const desiredMode = 'mesh';
+      const chunkDistance = Math.max(Math.abs(dx), Math.abs(dz));
+      const desiredMode = chunkDistance > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
       const key = this.key(chunk.cx, chunk.cz);
       if (chunk.mode !== desiredMode && !this.pendingRebuildSet.has(key)) {
         this.pendingRebuildSet.add(key);
@@ -947,15 +949,18 @@ function sampleTerrainColorAtWorld(x, z) {
   return '#4f8f3e';
 }
 
-function buildStaticMapLayer() {
-  const layerCanvas = createScratchCanvas(WORLD_SIZE);
+function buildStaticMapLayer(size) {
+  const layerCanvas = createScratchCanvas(size);
   const layerCtx = layerCanvas.getContext('2d');
   if (!layerCtx) return null;
 
-  for (let pz = 0; pz < WORLD_SIZE; pz += 1) {
-    for (let px = 0; px < WORLD_SIZE; px += 1) {
-      layerCtx.fillStyle = sampleTerrainColorAtWorld(px, pz);
-      layerCtx.fillRect(px, pz, 1, 1);
+  const blockSize = 1;
+  for (let pz = 0; pz < size; pz += blockSize) {
+    for (let px = 0; px < size; px += blockSize) {
+      const worldX = THREE.MathUtils.clamp(Math.floor((px / size) * WORLD_SIZE), 0, WORLD_SIZE - 1);
+      const worldZ = THREE.MathUtils.clamp(Math.floor((pz / size) * WORLD_SIZE), 0, WORLD_SIZE - 1);
+      layerCtx.fillStyle = sampleTerrainColorAtWorld(worldX, worldZ);
+      layerCtx.fillRect(px, pz, blockSize, blockSize);
     }
   }
 
@@ -963,7 +968,8 @@ function buildStaticMapLayer() {
 }
 
 function rebuildMapStaticLayers() {
-  mapStaticLayerWorld = buildStaticMapLayer();
+  mapStaticLayerMini = buildStaticMapLayer(miniMapCanvas.width);
+  mapStaticLayerFull = buildStaticMapLayer(fullMapCanvas.width);
 }
 
 function worldToMapPixel(x, z, size) {
@@ -984,11 +990,10 @@ function mapPixelToWorld(event, targetCanvas) {
 function drawMapToCanvas(ctx, targetCanvas, scale = 1) {
   if (!ctx) return;
   const size = targetCanvas.width;
-  const staticLayer = mapStaticLayerWorld;
+  const staticLayer = targetCanvas === fullMapCanvas ? mapStaticLayerFull : mapStaticLayerMini;
 
   ctx.clearRect(0, 0, size, size);
-  ctx.imageSmoothingEnabled = false;
-  if (staticLayer) ctx.drawImage(staticLayer, 0, 0, WORLD_SIZE, WORLD_SIZE, 0, 0, size, size);
+  if (staticLayer) ctx.drawImage(staticLayer, 0, 0, size, size);
 
   if (currentWorld) {
     for (const pin of ensureWorldPins(currentWorld)) {
