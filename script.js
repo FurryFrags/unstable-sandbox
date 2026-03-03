@@ -740,6 +740,7 @@ class ChunkManager {
     this.projectionView.multiplyMatrices(cameraObj.projectionMatrix, cameraObj.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
 
+    const chunksToSwap = [];
     for (const [, chunk] of this.chunks) {
       const dx = chunk.cx - camChunkX;
       const dz = chunk.cz - camChunkZ;
