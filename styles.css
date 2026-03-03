@@ -163,6 +163,8 @@ button:hover {
   padding: 0.7rem;
   width: 220px;
   color: #eef6ff;
+  transform: scale(0.333333);
+  transform-origin: top right;
 }
 
 .map-panel h3 {
@@ -202,6 +204,8 @@ button:hover {
   border-radius: 14px;
   padding: 0.9rem;
   color: #ecf3ff;
+  transform: scale(0.333333);
+  transform-origin: center;
 }
 
 .map-card-top {
