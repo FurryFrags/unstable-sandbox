@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const WORLD_SIZE = 84 * 3;
+const WORLD_SIZE = 84;
 const MAX_HEIGHT = Math.round(16 * 1.3 * 5);
 const OCEAN_LEVEL = 8;
 

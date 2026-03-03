@@ -161,7 +161,7 @@ button:hover {
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
   padding: 0.7rem;
-  width: 220px;
+  width: 660px;
   color: #eef6ff;
   transform: scale(1);
   transform-origin: top right;
@@ -198,7 +198,7 @@ button:hover {
 }
 
 .map-card {
-  width: min(720px, 92vw);
+  width: min(2160px, 96vw);
   background: rgba(8, 12, 18, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 14px;
