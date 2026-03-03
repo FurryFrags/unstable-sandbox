@@ -8,7 +8,6 @@ const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
 const RENDER_DISTANCE = Math.min(WORLD_CHUNKS, 18);
 const SPLAT_LOD_DISTANCE = 6;
-const SPLAT_LOD_HYSTERESIS = 1;
 const SHADOW_CAST_DISTANCE = 2;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 const FLY_SPEED_MULTIPLIER = 3;
@@ -117,19 +116,19 @@ const materials = {
 };
 
 const blockColors = {
-  [BLOCK_STONE]: materials[BLOCK_STONE].color.clone().multiplyScalar(0.86),
-  [BLOCK_DIRT]: materials[BLOCK_DIRT].color.clone().multiplyScalar(0.86),
-  [BLOCK_GRASS]: materials[BLOCK_GRASS].color.clone().multiplyScalar(0.9),
-  [BLOCK_WOOD]: materials[BLOCK_WOOD].color.clone().multiplyScalar(0.86),
-  [BLOCK_LEAF]: materials[BLOCK_LEAF].color.clone().multiplyScalar(0.9),
-  [BLOCK_WATER]: materials[BLOCK_WATER].color.clone().multiplyScalar(0.94),
-  [BLOCK_SAND]: materials[BLOCK_SAND].color.clone().multiplyScalar(0.92),
-  [BLOCK_APPLE]: materials[BLOCK_APPLE].color.clone().multiplyScalar(0.9),
-  [BLOCK_SNOW]: materials[BLOCK_SNOW].color.clone().multiplyScalar(0.96),
+  [BLOCK_STONE]: new THREE.Color('#5d6875'),
+  [BLOCK_DIRT]: new THREE.Color('#805d3b'),
+  [BLOCK_GRASS]: new THREE.Color('#58a83f'),
+  [BLOCK_WOOD]: new THREE.Color('#7b5534'),
+  [BLOCK_LEAF]: new THREE.Color('#3f8f3f'),
+  [BLOCK_WATER]: new THREE.Color('#4ca4ff'),
+  [BLOCK_SAND]: new THREE.Color('#dfcb8d'),
+  [BLOCK_APPLE]: new THREE.Color('#c42929'),
+  [BLOCK_SNOW]: new THREE.Color('#ffffff'),
 };
 
 const splatMaterial = new THREE.PointsMaterial({
-  size: 1.75,
+  size: 1.35,
   sizeAttenuation: true,
   vertexColors: true,
   transparent: true,
@@ -587,15 +586,6 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
   return geometry;
 }
 
-function getTopVisibleVoxel(wx, wz) {
-  const maxY = Math.min(MAX_HEIGHT, Math.max(terrainHeight(wx, wz) + 6, waterHeight(wx, wz)));
-  for (let y = maxY; y >= 0; y -= 1) {
-    const type = getVoxelTypeAt(wx, y, wz);
-    if (type !== BLOCK_AIR) return { y, type };
-  }
-  return { y: 0, type: BLOCK_STONE };
-}
-
 function buildChunkSplatGeometry(cx, cz) {
   const positions = [];
   const colors = [];
@@ -606,15 +596,24 @@ function buildChunkSplatGeometry(cx, cz) {
     for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
       const wx = chunkOriginX + lx;
       const wz = chunkOriginZ + lz;
-      const topVisible = getTopVisibleVoxel(wx, wz);
-      const baseColor = blockColors[topVisible.type] || blockColors[BLOCK_STONE];
 
-      positions.push(lx + 0.5, topVisible.y + 0.72, lz + 0.5);
+      const topY = terrainHeight(wx, wz);
+      const topType = getVoxelTypeAt(wx, topY, wz);
+      const waterSurface = waterHeight(wx, wz);
+      const visibleY = waterSurface > topY ? waterSurface : topY;
+      const visibleType = waterSurface > topY ? BLOCK_WATER : topType;
+
+      const baseColor = blockColors[visibleType] || blockColors[BLOCK_STONE];
+      const jitterX = hash2(wx * 1.93 + 17.5, wz * 1.17 + 7.1) - 0.5;
+      const jitterZ = hash2(wx * 1.37 + 9.1, wz * 1.81 + 12.4) - 0.5;
+
+      positions.push(lx + 0.5 + jitterX * 0.28, visibleY + 0.7, lz + 0.5 + jitterZ * 0.28);
       colors.push(baseColor.r, baseColor.g, baseColor.b);
 
-      if (topVisible.type === BLOCK_GRASS || topVisible.type === BLOCK_SNOW || topVisible.type === BLOCK_SAND) {
-        positions.push(lx + 0.5, topVisible.y + 1.04, lz + 0.5);
-        colors.push(baseColor.r, baseColor.g, baseColor.b);
+      if (topType === BLOCK_GRASS || topType === BLOCK_SNOW) {
+        const accent = blockColors[topType];
+        positions.push(lx + 0.5 - jitterX * 0.18, visibleY + 1.15, lz + 0.5 - jitterZ * 0.18);
+        colors.push(accent.r, accent.g, accent.b);
       }
     }
   }
@@ -624,8 +623,6 @@ function buildChunkSplatGeometry(cx, cz) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geometry.computeBoundingSphere();
-  geometry.computeBoundingBox();
   return geometry;
 }
 
@@ -637,6 +634,7 @@ class ChunkManager {
     this.projectionView = new THREE.Matrix4();
     this.pendingBuildQueue = [];
     this.pendingBuildSet = new Set();
+    this.pendingRebuildSet = new Set();
   }
 
   key(cx, cz) {
@@ -751,17 +749,18 @@ class ChunkManager {
       for (const mesh of chunk.meshes) mesh.castShadow = castShadow;
 
       const chunkDistance = Math.max(Math.abs(dx), Math.abs(dz));
-      let desiredMode = chunk.mode;
-      if (chunk.mode === 'mesh' && chunkDistance > SPLAT_LOD_DISTANCE + SPLAT_LOD_HYSTERESIS) desiredMode = 'splat';
-      if (chunk.mode === 'splat' && chunkDistance < SPLAT_LOD_DISTANCE - SPLAT_LOD_HYSTERESIS) desiredMode = 'mesh';
-      if (chunk.mode !== desiredMode) chunksToSwap.push({ chunk, desiredMode });
+      const desiredMode = chunkDistance > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
+      const key = this.key(chunk.cx, chunk.cz);
+      if (chunk.mode !== desiredMode && !this.pendingRebuildSet.has(key)) {
+        this.pendingRebuildSet.add(key);
+        this.unloadChunk(chunk);
+        this.chunks.delete(key);
+        this.enqueueChunkBuild(chunk.cx, chunk.cz, camChunkX, camChunkZ);
+      }
     }
 
-    for (const swap of chunksToSwap) {
-      const { chunk, desiredMode } = swap;
-      this.unloadChunk(chunk);
-      this.chunks.delete(this.key(chunk.cx, chunk.cz));
-      this.buildChunk(chunk.cx, chunk.cz, desiredMode === 'splat' ? SPLAT_LOD_DISTANCE + 1 : 0);
+    for (const key of this.pendingRebuildSet) {
+      if (!this.pendingBuildSet.has(key)) this.pendingRebuildSet.delete(key);
     }
   }
 }
