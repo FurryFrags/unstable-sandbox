@@ -28,33 +28,13 @@ body {
   position: fixed;
   top: 0.9rem;
   left: 0.9rem;
-  overflow: hidden;
-  isolation: isolate;
   max-width: 420px;
   background: rgba(8, 12, 18, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 12px;
   padding: 0.9rem 1rem;
   backdrop-filter: blur(3px);
-  box-shadow:
-    0 24px 36px rgba(0, 0, 0, 0.28),
-    0 7px 12px rgba(0, 0, 0, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
   color: #eef6ff;
-}
-
-.overlay-panel::before,
-.hud::before,
-.map-panel::before,
-.map-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(140% 72% at 20% -10%, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 48%),
-    linear-gradient(165deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 34%);
-  z-index: -1;
 }
 
 .overlay-panel h1,
@@ -106,7 +86,6 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   padding: 0.5rem;
-  box-shadow: 0 8px 12px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .world-card small {
@@ -134,23 +113,12 @@ input {
 }
 
 button {
-  position: relative;
-  overflow: hidden;
   background: #3d83df;
   color: #fff;
   border: 0;
   border-radius: 6px;
   padding: 0.45rem 0.6rem;
   cursor: pointer;
-  box-shadow: 0 7px 14px rgba(14, 36, 70, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-
-button::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0) 45%);
 }
 
 button:hover {
@@ -189,18 +157,12 @@ button:hover {
   position: fixed;
   top: 0.9rem;
   right: 0.9rem;
-  overflow: hidden;
-  isolation: isolate;
   background: rgba(8, 12, 18, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
   padding: 0.7rem;
   width: 660px;
   color: #eef6ff;
-  box-shadow:
-    0 28px 40px rgba(0, 0, 0, 0.34),
-    0 9px 16px rgba(0, 0, 0, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
   transform: scale(1);
   transform-origin: top right;
 }
@@ -236,19 +198,12 @@ button:hover {
 }
 
 .map-card {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
   width: min(2160px, 96vw);
   background: rgba(8, 12, 18, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 14px;
   padding: 0.9rem;
   color: #ecf3ff;
-  box-shadow:
-    0 34px 58px rgba(0, 0, 0, 0.45),
-    0 8px 18px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
   transform: scale(1);
   transform-origin: center;
 }
