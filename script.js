@@ -6,7 +6,9 @@ const OCEAN_LEVEL = 8;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = WORLD_CHUNKS;
+const RENDER_DISTANCE = Math.min(WORLD_CHUNKS, 18);
+const SPLAT_LOD_DISTANCE = 6;
+const SPLAT_LOD_HYSTERESIS = 1;
 const SHADOW_CAST_DISTANCE = 2;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 const FLY_SPEED_MULTIPLIER = 3;
@@ -113,6 +115,27 @@ const materials = {
   [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
   [BLOCK_SNOW]: new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78, side: THREE.DoubleSide }),
 };
+
+const blockColors = {
+  [BLOCK_STONE]: materials[BLOCK_STONE].color.clone().multiplyScalar(0.86),
+  [BLOCK_DIRT]: materials[BLOCK_DIRT].color.clone().multiplyScalar(0.86),
+  [BLOCK_GRASS]: materials[BLOCK_GRASS].color.clone().multiplyScalar(0.9),
+  [BLOCK_WOOD]: materials[BLOCK_WOOD].color.clone().multiplyScalar(0.86),
+  [BLOCK_LEAF]: materials[BLOCK_LEAF].color.clone().multiplyScalar(0.9),
+  [BLOCK_WATER]: materials[BLOCK_WATER].color.clone().multiplyScalar(0.94),
+  [BLOCK_SAND]: materials[BLOCK_SAND].color.clone().multiplyScalar(0.92),
+  [BLOCK_APPLE]: materials[BLOCK_APPLE].color.clone().multiplyScalar(0.9),
+  [BLOCK_SNOW]: materials[BLOCK_SNOW].color.clone().multiplyScalar(0.96),
+};
+
+const splatMaterial = new THREE.PointsMaterial({
+  size: 1.75,
+  sizeAttenuation: true,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.85,
+  depthWrite: false,
+});
 
 let worldSeed = 1;
 let seedOffsetA = 0;
@@ -564,6 +587,48 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
   return geometry;
 }
 
+function getTopVisibleVoxel(wx, wz) {
+  const maxY = Math.min(MAX_HEIGHT, Math.max(terrainHeight(wx, wz) + 6, waterHeight(wx, wz)));
+  for (let y = maxY; y >= 0; y -= 1) {
+    const type = getVoxelTypeAt(wx, y, wz);
+    if (type !== BLOCK_AIR) return { y, type };
+  }
+  return { y: 0, type: BLOCK_STONE };
+}
+
+function buildChunkSplatGeometry(cx, cz) {
+  const positions = [];
+  const colors = [];
+  const chunkOriginX = cx * CHUNK_SIZE;
+  const chunkOriginZ = cz * CHUNK_SIZE;
+
+  for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
+      const wx = chunkOriginX + lx;
+      const wz = chunkOriginZ + lz;
+      const topVisible = getTopVisibleVoxel(wx, wz);
+      const baseColor = blockColors[topVisible.type] || blockColors[BLOCK_STONE];
+
+      positions.push(lx + 0.5, topVisible.y + 0.72, lz + 0.5);
+      colors.push(baseColor.r, baseColor.g, baseColor.b);
+
+      if (topVisible.type === BLOCK_GRASS || topVisible.type === BLOCK_SNOW || topVisible.type === BLOCK_SAND) {
+        positions.push(lx + 0.5, topVisible.y + 1.04, lz + 0.5);
+        colors.push(baseColor.r, baseColor.g, baseColor.b);
+      }
+    }
+  }
+
+  if (!positions.length) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeBoundingSphere();
+  geometry.computeBoundingBox();
+  return geometry;
+}
+
 class ChunkManager {
   constructor(root) {
     this.root = root;
@@ -599,32 +664,44 @@ class ChunkManager {
       const next = this.pendingBuildQueue.shift();
       this.pendingBuildSet.delete(next.key);
       if (!this.chunks.has(next.key)) {
-        this.buildChunk(next.cx, next.cz);
+        this.buildChunk(next.cx, next.cz, next.distance);
         built += 1;
       }
     }
   }
 
-  buildChunk(cx, cz) {
+  buildChunk(cx, cz, distanceFromCamera = 0) {
     const key = this.key(cx, cz);
     if (this.chunks.has(key) || !this.inWorld(cx, cz)) return;
 
-    const voxels = buildChunkVoxelData(cx, cz);
     const group = new THREE.Group();
     const chunkOriginX = cx * CHUNK_SIZE;
     const chunkOriginZ = cz * CHUNK_SIZE;
     group.position.set(chunkOriginX, 0, chunkOriginZ);
 
     const meshes = [];
-    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
-      const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
-      if (!geometry) continue;
-      const mesh = new THREE.Mesh(geometry, materials[type]);
-      mesh.receiveShadow = false;
-      mesh.castShadow = false;
-      mesh.frustumCulled = true;
-      group.add(mesh);
-      meshes.push(mesh);
+    const mode = distanceFromCamera > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
+
+    if (mode === 'mesh') {
+      const voxels = buildChunkVoxelData(cx, cz);
+      for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
+        const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
+        if (!geometry) continue;
+        const mesh = new THREE.Mesh(geometry, materials[type]);
+        mesh.receiveShadow = false;
+        mesh.castShadow = false;
+        mesh.frustumCulled = true;
+        group.add(mesh);
+        meshes.push(mesh);
+      }
+    } else {
+      const splatGeometry = buildChunkSplatGeometry(cx, cz);
+      if (splatGeometry) {
+        const splatMesh = new THREE.Points(splatGeometry, splatMaterial);
+        splatMesh.frustumCulled = true;
+        group.add(splatMesh);
+        meshes.push(splatMesh);
+      }
     }
 
     const bounds = new THREE.Box3(
@@ -632,7 +709,7 @@ class ChunkManager {
       new THREE.Vector3((cx + 1) * CHUNK_SIZE, MAX_HEIGHT + 1, (cz + 1) * CHUNK_SIZE),
     );
 
-    this.chunks.set(key, { cx, cz, group, meshes, bounds });
+    this.chunks.set(key, { cx, cz, group, meshes, bounds, mode });
     this.root.add(group);
   }
 
@@ -665,12 +742,26 @@ class ChunkManager {
     this.projectionView.multiplyMatrices(cameraObj.projectionMatrix, cameraObj.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.projectionView);
 
+    const chunksToSwap = [];
     for (const [, chunk] of this.chunks) {
       const dx = chunk.cx - camChunkX;
       const dz = chunk.cz - camChunkZ;
       chunk.group.visible = this.frustum.intersectsBox(chunk.bounds);
       const castShadow = Math.max(Math.abs(dx), Math.abs(dz)) <= SHADOW_CAST_DISTANCE;
       for (const mesh of chunk.meshes) mesh.castShadow = castShadow;
+
+      const chunkDistance = Math.max(Math.abs(dx), Math.abs(dz));
+      let desiredMode = chunk.mode;
+      if (chunk.mode === 'mesh' && chunkDistance > SPLAT_LOD_DISTANCE + SPLAT_LOD_HYSTERESIS) desiredMode = 'splat';
+      if (chunk.mode === 'splat' && chunkDistance < SPLAT_LOD_DISTANCE - SPLAT_LOD_HYSTERESIS) desiredMode = 'mesh';
+      if (chunk.mode !== desiredMode) chunksToSwap.push({ chunk, desiredMode });
+    }
+
+    for (const swap of chunksToSwap) {
+      const { chunk, desiredMode } = swap;
+      this.unloadChunk(chunk);
+      this.chunks.delete(this.key(chunk.cx, chunk.cz));
+      this.buildChunk(chunk.cx, chunk.cz, desiredMode === 'splat' ? SPLAT_LOD_DISTANCE + 1 : 0);
     }
   }
 }
