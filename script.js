@@ -6,9 +6,11 @@ const OCEAN_LEVEL = 8;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = WORLD_CHUNKS;
+const RENDER_DISTANCE = Math.min(6, WORLD_CHUNKS);
 const SHADOW_CAST_DISTANCE = 2;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
+const MAX_CHUNK_DATA_CACHE = 256;
+const STATUS_UPDATE_MS = 150;
 const FLY_SPEED_MULTIPLIER = 3;
 
 const BLOCK_AIR = 0;
@@ -126,6 +128,7 @@ let mapContextPoint = null;
 let mapStaticLayerMini = null;
 let mapStaticLayerFull = null;
 let lastMiniMapDrawAt = 0;
+let lastStatusUpdateAt = -Infinity;
 let activeWorldGenProfile = DEFAULT_WORLD_GEN_PROFILE;
 
 const tmpLookDirection = new THREE.Vector3();
@@ -473,8 +476,26 @@ function getVoxelTypeAt(wx, y, wz) {
   return BLOCK_STONE;
 }
 
-function buildChunkVoxelData(cx, cz) {
-  const sizeY = MAX_HEIGHT + 1;
+function estimateChunkYMax(cx, cz) {
+  const minX = cx * CHUNK_SIZE;
+  const minZ = cz * CHUNK_SIZE;
+  let yMax = activeWorldGenProfile.oceanLevel + 1;
+
+  for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
+    for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
+      const wx = minX + lx;
+      const wz = minZ + lz;
+      if (wx < 0 || wz < 0 || wx >= WORLD_SIZE || wz >= WORLD_SIZE) continue;
+      const columnTop = Math.max(terrainHeight(wx, wz), waterHeight(wx, wz));
+      yMax = Math.max(yMax, columnTop + 1 + activeWorldGenProfile.treeCanopyRadius * 2);
+    }
+  }
+
+  return THREE.MathUtils.clamp(yMax, 1, MAX_HEIGHT);
+}
+
+function buildChunkVoxelData(cx, cz, yMax = MAX_HEIGHT) {
+  const sizeY = yMax + 1;
   const voxels = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * sizeY);
   const minX = cx * CHUNK_SIZE;
   const minZ = cz * CHUNK_SIZE;
@@ -484,7 +505,7 @@ function buildChunkVoxelData(cx, cz) {
     for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
       const wx = minX + lx;
       const wz = minZ + lz;
-      for (let y = 0; y <= MAX_HEIGHT; y += 1) {
+      for (let y = 0; y <= yMax; y += 1) {
         voxels[voxelIndex(lx, y, lz)] = getVoxelTypeAt(wx, y, wz);
       }
     }
@@ -501,14 +522,14 @@ function pushQuad(positions, normals, indices, corners, normal) {
   indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
-function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOriginZ) {
+function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOriginZ, yMax = MAX_HEIGHT) {
   const positions = [];
   const normals = [];
   const indices = [];
 
   const index = (x, y, z) => x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
   const voxelAt = (x, y, z) => {
-    if (y < 0 || y > MAX_HEIGHT) return BLOCK_AIR;
+    if (y < 0 || y > yMax) return BLOCK_AIR;
     if (x < 0 || z < 0 || x >= CHUNK_SIZE || z >= CHUNK_SIZE) {
       const wx = chunkOriginX + x;
       const wz = chunkOriginZ + z;
@@ -534,7 +555,7 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
     { normal: [0, 0, -1], corners: [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], neighbor: [0, 0, -1] },
   ];
 
-  for (let y = 0; y <= MAX_HEIGHT; y += 1) {
+  for (let y = 0; y <= yMax; y += 1) {
     for (let z = 0; z < CHUNK_SIZE; z += 1) {
       for (let x = 0; x < CHUNK_SIZE; x += 1) {
         if (voxelAt(x, y, z) !== materialType) continue;
@@ -572,6 +593,9 @@ class ChunkManager {
     this.projectionView = new THREE.Matrix4();
     this.pendingBuildQueue = [];
     this.pendingBuildSet = new Set();
+    this.chunkDataCache = new Map();
+    this.chunkEditVersion = new Map();
+    this.chunkDataCounter = 0;
   }
 
   key(cx, cz) {
@@ -580,6 +604,40 @@ class ChunkManager {
 
   inWorld(cx, cz) {
     return cx >= 0 && cz >= 0 && cx < WORLD_CHUNKS && cz < WORLD_CHUNKS;
+  }
+
+  getChunkVersion(key) {
+    return this.chunkEditVersion.get(key) || 0;
+  }
+
+  getChunkData(cx, cz) {
+    const key = this.key(cx, cz);
+    const version = this.getChunkVersion(key);
+    const cached = this.chunkDataCache.get(key);
+    if (cached && cached.version === version) {
+      cached.lastUsed = ++this.chunkDataCounter;
+      return cached;
+    }
+
+    const yMax = estimateChunkYMax(cx, cz);
+    const voxels = buildChunkVoxelData(cx, cz, yMax);
+    const entry = { version, voxels, yMax, lastUsed: ++this.chunkDataCounter };
+    this.chunkDataCache.set(key, entry);
+    this.evictChunkDataCache();
+    return entry;
+  }
+
+  evictChunkDataCache() {
+    if (this.chunkDataCache.size <= MAX_CHUNK_DATA_CACHE) return;
+    let oldestKey = null;
+    let oldestUse = Infinity;
+    for (const [key, entry] of this.chunkDataCache) {
+      if (entry.lastUsed < oldestUse) {
+        oldestUse = entry.lastUsed;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) this.chunkDataCache.delete(oldestKey);
   }
 
   enqueueChunkBuild(cx, cz, camChunkX, camChunkZ) {
@@ -609,7 +667,7 @@ class ChunkManager {
     const key = this.key(cx, cz);
     if (this.chunks.has(key) || !this.inWorld(cx, cz)) return;
 
-    const voxels = buildChunkVoxelData(cx, cz);
+    const { voxels, yMax } = this.getChunkData(cx, cz);
     const group = new THREE.Group();
     const chunkOriginX = cx * CHUNK_SIZE;
     const chunkOriginZ = cz * CHUNK_SIZE;
@@ -617,7 +675,7 @@ class ChunkManager {
 
     const meshes = [];
     for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
-      const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
+      const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ, yMax);
       if (!geometry) continue;
       const mesh = new THREE.Mesh(geometry, materials[type]);
       mesh.receiveShadow = false;
@@ -629,7 +687,7 @@ class ChunkManager {
 
     const bounds = new THREE.Box3(
       new THREE.Vector3(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE),
-      new THREE.Vector3((cx + 1) * CHUNK_SIZE, MAX_HEIGHT + 1, (cz + 1) * CHUNK_SIZE),
+      new THREE.Vector3((cx + 1) * CHUNK_SIZE, yMax + 1, (cz + 1) * CHUNK_SIZE),
     );
 
     this.chunks.set(key, { cx, cz, group, meshes, bounds });
@@ -648,11 +706,24 @@ class ChunkManager {
     this.chunks.clear();
     this.pendingBuildQueue.length = 0;
     this.pendingBuildSet.clear();
+    this.chunkDataCache.clear();
+    this.chunkEditVersion.clear();
+  }
+
+  unloadFarChunks(camChunkX, camChunkZ) {
+    for (const [key, chunk] of this.chunks) {
+      const distance = Math.max(Math.abs(chunk.cx - camChunkX), Math.abs(chunk.cz - camChunkZ));
+      if (distance <= RENDER_DISTANCE + 1) continue;
+      this.unloadChunk(chunk);
+      this.chunks.delete(key);
+    }
   }
 
   update(cameraObj) {
     const camChunkX = Math.floor(cameraObj.position.x / CHUNK_SIZE);
     const camChunkZ = Math.floor(cameraObj.position.z / CHUNK_SIZE);
+
+    this.unloadFarChunks(camChunkX, camChunkZ);
 
     for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz += 1) {
       for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx += 1) {
@@ -932,6 +1003,9 @@ function teleportToWorldPoint(x, z) {
 
 function setModeStatus() {
   if (!worldActive) return;
+  const now = performance.now();
+  if (now - lastStatusUpdateAt < STATUS_UPDATE_MS) return;
+  lastStatusUpdateAt = now;
   if (!pointerLocked) {
     statusEl.textContent = `World: ${currentWorld.name} | Click scene to lock pointer.`;
     return;
@@ -1050,6 +1124,7 @@ function startWorld(worldData) {
   resetWorldCaches();
   rebuildMapStaticLayers();
   lastMiniMapDrawAt = 0;
+  lastStatusUpdateAt = -Infinity;
   chunkManager.clear();
 
   camera.position.set(12, 30, 12);
