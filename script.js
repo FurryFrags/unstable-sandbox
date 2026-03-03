@@ -6,8 +6,7 @@ const OCEAN_LEVEL = 8;
 
 const CHUNK_SIZE = 16;
 const WORLD_CHUNKS = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
-const RENDER_DISTANCE = Math.min(WORLD_CHUNKS, 18);
-const SPLAT_LOD_DISTANCE = 6;
+const RENDER_DISTANCE = WORLD_CHUNKS;
 const SHADOW_CAST_DISTANCE = 2;
 const MAX_CHUNK_BUILDS_PER_FRAME = 1;
 const MAX_CHUNK_DATA_CACHE = 256;
@@ -116,27 +115,6 @@ const materials = {
   [BLOCK_APPLE]: new THREE.MeshStandardMaterial({ color: '#c42929', roughness: 0.72, side: THREE.DoubleSide }),
   [BLOCK_SNOW]: new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.78, side: THREE.DoubleSide }),
 };
-
-const blockColors = {
-  [BLOCK_STONE]: new THREE.Color('#5d6875'),
-  [BLOCK_DIRT]: new THREE.Color('#805d3b'),
-  [BLOCK_GRASS]: new THREE.Color('#58a83f'),
-  [BLOCK_WOOD]: new THREE.Color('#7b5534'),
-  [BLOCK_LEAF]: new THREE.Color('#3f8f3f'),
-  [BLOCK_WATER]: new THREE.Color('#4ca4ff'),
-  [BLOCK_SAND]: new THREE.Color('#dfcb8d'),
-  [BLOCK_APPLE]: new THREE.Color('#c42929'),
-  [BLOCK_SNOW]: new THREE.Color('#ffffff'),
-};
-
-const splatMaterial = new THREE.PointsMaterial({
-  size: 1.35,
-  sizeAttenuation: true,
-  vertexColors: true,
-  transparent: true,
-  opacity: 0.85,
-  depthWrite: false,
-});
 
 let worldSeed = 1;
 let seedOffsetA = 0;
@@ -607,46 +585,6 @@ function buildMaterialGreedyGeometry(voxels, materialType, chunkOriginX, chunkOr
   return geometry;
 }
 
-function buildChunkSplatGeometry(cx, cz) {
-  const positions = [];
-  const colors = [];
-  const chunkOriginX = cx * CHUNK_SIZE;
-  const chunkOriginZ = cz * CHUNK_SIZE;
-
-  for (let lz = 0; lz < CHUNK_SIZE; lz += 1) {
-    for (let lx = 0; lx < CHUNK_SIZE; lx += 1) {
-      const wx = chunkOriginX + lx;
-      const wz = chunkOriginZ + lz;
-
-      const topY = terrainHeight(wx, wz);
-      const topType = getVoxelTypeAt(wx, topY, wz);
-      const waterSurface = waterHeight(wx, wz);
-      const visibleY = waterSurface > topY ? waterSurface : topY;
-      const visibleType = waterSurface > topY ? BLOCK_WATER : topType;
-
-      const baseColor = blockColors[visibleType] || blockColors[BLOCK_STONE];
-      const jitterX = hash2(wx * 1.93 + 17.5, wz * 1.17 + 7.1) - 0.5;
-      const jitterZ = hash2(wx * 1.37 + 9.1, wz * 1.81 + 12.4) - 0.5;
-
-      positions.push(lx + 0.5 + jitterX * 0.28, visibleY + 0.7, lz + 0.5 + jitterZ * 0.28);
-      colors.push(baseColor.r, baseColor.g, baseColor.b);
-
-      if (topType === BLOCK_GRASS || topType === BLOCK_SNOW) {
-        const accent = blockColors[topType];
-        positions.push(lx + 0.5 - jitterX * 0.18, visibleY + 1.15, lz + 0.5 - jitterZ * 0.18);
-        colors.push(accent.r, accent.g, accent.b);
-      }
-    }
-  }
-
-  if (!positions.length) return null;
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  return geometry;
-}
-
 class ChunkManager {
   constructor(root) {
     this.root = root;
@@ -655,7 +593,6 @@ class ChunkManager {
     this.projectionView = new THREE.Matrix4();
     this.pendingBuildQueue = [];
     this.pendingBuildSet = new Set();
-    this.pendingRebuildSet = new Set();
   }
 
   key(cx, cz) {
@@ -717,44 +654,32 @@ class ChunkManager {
       const next = this.pendingBuildQueue.shift();
       this.pendingBuildSet.delete(next.key);
       if (!this.chunks.has(next.key)) {
-        this.buildChunk(next.cx, next.cz, next.distance);
+        this.buildChunk(next.cx, next.cz);
         built += 1;
       }
     }
   }
 
-  buildChunk(cx, cz, distanceFromCamera = 0) {
+  buildChunk(cx, cz) {
     const key = this.key(cx, cz);
     if (this.chunks.has(key) || !this.inWorld(cx, cz)) return;
 
+    const voxels = buildChunkVoxelData(cx, cz);
     const group = new THREE.Group();
     const chunkOriginX = cx * CHUNK_SIZE;
     const chunkOriginZ = cz * CHUNK_SIZE;
     group.position.set(chunkOriginX, 0, chunkOriginZ);
 
     const meshes = [];
-    const mode = distanceFromCamera > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
-
-    if (mode === 'mesh') {
-      const voxels = buildChunkVoxelData(cx, cz);
-      for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
-        const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
-        if (!geometry) continue;
-        const mesh = new THREE.Mesh(geometry, materials[type]);
-        mesh.receiveShadow = false;
-        mesh.castShadow = false;
-        mesh.frustumCulled = true;
-        group.add(mesh);
-        meshes.push(mesh);
-      }
-    } else {
-      const splatGeometry = buildChunkSplatGeometry(cx, cz);
-      if (splatGeometry) {
-        const splatMesh = new THREE.Points(splatGeometry, splatMaterial);
-        splatMesh.frustumCulled = true;
-        group.add(splatMesh);
-        meshes.push(splatMesh);
-      }
+    for (const type of [BLOCK_STONE, BLOCK_DIRT, BLOCK_GRASS, BLOCK_WOOD, BLOCK_LEAF, BLOCK_WATER, BLOCK_SAND, BLOCK_APPLE, BLOCK_SNOW]) {
+      const geometry = buildMaterialGreedyGeometry(voxels, type, chunkOriginX, chunkOriginZ);
+      if (!geometry) continue;
+      const mesh = new THREE.Mesh(geometry, materials[type]);
+      mesh.receiveShadow = false;
+      mesh.castShadow = false;
+      mesh.frustumCulled = true;
+      group.add(mesh);
+      meshes.push(mesh);
     }
 
     const bounds = new THREE.Box3(
@@ -762,7 +687,7 @@ class ChunkManager {
       new THREE.Vector3((cx + 1) * CHUNK_SIZE, yMax + 1, (cz + 1) * CHUNK_SIZE),
     );
 
-    this.chunks.set(key, { cx, cz, group, meshes, bounds, mode });
+    this.chunks.set(key, { cx, cz, group, meshes, bounds });
     this.root.add(group);
   }
 
@@ -815,20 +740,6 @@ class ChunkManager {
       chunk.group.visible = this.frustum.intersectsBox(chunk.bounds);
       const castShadow = Math.max(Math.abs(dx), Math.abs(dz)) <= SHADOW_CAST_DISTANCE;
       for (const mesh of chunk.meshes) mesh.castShadow = castShadow;
-
-      const chunkDistance = Math.max(Math.abs(dx), Math.abs(dz));
-      const desiredMode = chunkDistance > SPLAT_LOD_DISTANCE ? 'splat' : 'mesh';
-      const key = this.key(chunk.cx, chunk.cz);
-      if (chunk.mode !== desiredMode && !this.pendingRebuildSet.has(key)) {
-        this.pendingRebuildSet.add(key);
-        this.unloadChunk(chunk);
-        this.chunks.delete(key);
-        this.enqueueChunkBuild(chunk.cx, chunk.cz, camChunkX, camChunkZ);
-      }
-    }
-
-    for (const key of this.pendingRebuildSet) {
-      if (!this.pendingBuildSet.has(key)) this.pendingRebuildSet.delete(key);
     }
   }
 }
