@@ -53,6 +53,7 @@ const DEFAULT_WORLD_GEN_PROFILE = Object.freeze({
 
 const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
 const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
+const PLAYER_SKIN_KEY = 'voxel-sandbox-player-skin-v1';
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -73,6 +74,9 @@ const fullMapCanvas = document.getElementById('full-map-canvas');
 const fullMapCtx = fullMapCanvas.getContext('2d');
 const closeMapBtn = document.getElementById('close-map-btn');
 const mapContextMenuEl = document.getElementById('map-context-menu');
+const skinUploadInput = document.getElementById('skin-upload-input');
+const clearSkinBtn = document.getElementById('clear-skin-btn');
+const skinPreviewEl = document.getElementById('skin-preview');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -84,6 +88,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#87b9ff');
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, WORLD_SIZE * 3);
+const thirdPersonCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, WORLD_SIZE * 3);
 camera.position.set(12, 18, 12);
 
 const hemiLight = new THREE.HemisphereLight('#dbefff', '#4e633f', 0.8);
@@ -130,6 +135,12 @@ let activeWorldGenProfile = DEFAULT_WORLD_GEN_PROFILE;
 
 const tmpLookDirection = new THREE.Vector3();
 
+const SKIN_ATLAS_SIZE = 64;
+const defaultSkinDataUrl = createDefaultMinecraftSkinDataUrl();
+let playerSkinDataUrl = loadPlayerSkinDataUrl();
+let thirdPersonEnabled = false;
+let showHitbox = false;
+
 const MINI_MAP_FPS = 18;
 
 const PIN_CLICK_RADIUS_WORLD = 10;
@@ -139,6 +150,58 @@ const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const sandRadiusCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const biomeCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
+
+function createDefaultMinecraftSkinDataUrl() {
+  const skinCanvas = document.createElement('canvas');
+  skinCanvas.width = SKIN_ATLAS_SIZE;
+  skinCanvas.height = SKIN_ATLAS_SIZE;
+  const ctx = skinCanvas.getContext('2d');
+  if (!ctx) return '';
+
+  ctx.clearRect(0, 0, SKIN_ATLAS_SIZE, SKIN_ATLAS_SIZE);
+  ctx.fillStyle = '#f3c9a4';
+  ctx.fillRect(8, 8, 8, 8);
+  ctx.fillStyle = '#5c3b22';
+  ctx.fillRect(8, 0, 8, 8);
+  ctx.fillRect(0, 8, 8, 8);
+  ctx.fillRect(16, 8, 8, 8);
+  ctx.fillRect(24, 8, 8, 8);
+
+  ctx.fillStyle = '#4da1ff';
+  ctx.fillRect(20, 20, 8, 12);
+  ctx.fillRect(16, 20, 4, 12);
+  ctx.fillRect(28, 20, 4, 12);
+
+  ctx.fillStyle = '#2d6cc0';
+  ctx.fillRect(4, 20, 4, 12);
+  ctx.fillRect(0, 20, 4, 12);
+  ctx.fillRect(8, 20, 4, 12);
+  ctx.fillRect(44, 20, 4, 12);
+  ctx.fillRect(40, 20, 4, 12);
+  ctx.fillRect(48, 20, 4, 12);
+
+  ctx.fillStyle = '#3d3d3d';
+  ctx.fillRect(4, 32, 4, 12);
+  ctx.fillRect(0, 32, 4, 12);
+  ctx.fillRect(8, 32, 4, 12);
+  ctx.fillRect(20, 32, 8, 12);
+  ctx.fillRect(16, 32, 4, 12);
+  ctx.fillRect(28, 32, 4, 12);
+
+  return skinCanvas.toDataURL('image/png');
+}
+
+function loadPlayerSkinDataUrl() {
+  return localStorage.getItem(PLAYER_SKIN_KEY) || defaultSkinDataUrl;
+}
+
+function savePlayerSkinDataUrl(dataUrl) {
+  if (!dataUrl || dataUrl === defaultSkinDataUrl) {
+    localStorage.removeItem(PLAYER_SKIN_KEY);
+  } else {
+    localStorage.setItem(PLAYER_SKIN_KEY, dataUrl);
+  }
+}
 
 function loadWorldSaves() {
   try {
@@ -187,6 +250,8 @@ function saveOptions(options) {
 
 const options = loadOptions();
 optionStartFly.checked = !!options.startFlyMode;
+skinPreviewEl.src = playerSkinDataUrl || defaultSkinDataUrl;
+refreshPlayerSkin();
 
 function hashStringToSeed(value) {
   let h = 2166136261;
@@ -692,13 +757,144 @@ let verticalVelocity = 0;
 let lastSpaceDown = -Infinity;
 const activeKeys = new Set();
 
-const PLAYER_HEIGHT = 2;
-const PLAYER_EYE_HEIGHT = 1.7;
-const PLAYER_RADIUS = 0.35;
+const PLAYER_HEIGHT = 1.8;
+const PLAYER_EYE_HEIGHT = 1.62;
+const PLAYER_RADIUS = 0.3;
 const COLLISION_STEP = 0.1;
 const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
+
+function uvRect(x, y, w, h, atlasW = SKIN_ATLAS_SIZE, atlasH = SKIN_ATLAS_SIZE) {
+  return { x, y, w, h, atlasW, atlasH };
+}
+
+function applyFaceUv(uvAttr, faceIndex, rect) {
+  const x0 = rect.x / rect.atlasW;
+  const x1 = (rect.x + rect.w) / rect.atlasW;
+  const y0 = 1 - (rect.y + rect.h) / rect.atlasH;
+  const y1 = 1 - rect.y / rect.atlasH;
+  const i = faceIndex * 8;
+  uvAttr.setXY(i / 2 + 0, x1, y0);
+  uvAttr.setXY(i / 2 + 1, x0, y0);
+  uvAttr.setXY(i / 2 + 2, x1, y1);
+  uvAttr.setXY(i / 2 + 3, x0, y1);
+}
+
+function createSkinBox(width, height, depth, faces) {
+  const geometry = new THREE.BoxGeometry(width, height, depth);
+  const uv = geometry.attributes.uv;
+  [faces.right, faces.left, faces.top, faces.bottom, faces.front, faces.back].forEach((rect, faceIndex) => {
+    applyFaceUv(uv, faceIndex, rect);
+  });
+  uv.needsUpdate = true;
+  return geometry;
+}
+
+function createPlayerMesh(texture) {
+  const mat = new THREE.MeshStandardMaterial({ map: texture, transparent: true, alphaTest: 0.1 });
+  const group = new THREE.Group();
+
+  const head = new THREE.Mesh(
+    createSkinBox(0.5, 0.5, 0.5, {
+      right: uvRect(0, 8, 8, 8), left: uvRect(16, 8, 8, 8), top: uvRect(8, 0, 8, 8), bottom: uvRect(16, 0, 8, 8), front: uvRect(8, 8, 8, 8), back: uvRect(24, 8, 8, 8),
+    }),
+    mat,
+  );
+  head.position.set(0, 1.55, 0);
+
+  const body = new THREE.Mesh(
+    createSkinBox(0.5, 0.75, 0.25, {
+      right: uvRect(16, 20, 4, 12), left: uvRect(28, 20, 4, 12), top: uvRect(20, 16, 8, 4), bottom: uvRect(28, 16, 8, 4), front: uvRect(20, 20, 8, 12), back: uvRect(32, 20, 8, 12),
+    }),
+    mat,
+  );
+  body.position.set(0, 1.05, 0);
+
+  const rightArm = new THREE.Mesh(
+    createSkinBox(0.25, 0.75, 0.25, {
+      right: uvRect(40, 20, 4, 12), left: uvRect(48, 20, 4, 12), top: uvRect(44, 16, 4, 4), bottom: uvRect(48, 16, 4, 4), front: uvRect(44, 20, 4, 12), back: uvRect(52, 20, 4, 12),
+    }),
+    mat,
+  );
+  rightArm.position.set(-0.375, 1.05, 0);
+
+  const leftArm = rightArm.clone();
+  leftArm.position.set(0.375, 1.05, 0);
+
+  const rightLeg = new THREE.Mesh(
+    createSkinBox(0.25, 0.75, 0.25, {
+      right: uvRect(0, 20, 4, 12), left: uvRect(8, 20, 4, 12), top: uvRect(4, 16, 4, 4), bottom: uvRect(8, 16, 4, 4), front: uvRect(4, 20, 4, 12), back: uvRect(12, 20, 4, 12),
+    }),
+    mat,
+  );
+  rightLeg.position.set(-0.125, 0.3, 0);
+
+  const leftLeg = rightLeg.clone();
+  leftLeg.position.set(0.125, 0.3, 0);
+
+  group.add(head, body, rightArm, leftArm, rightLeg, leftLeg);
+  return group;
+}
+
+function loadSkinTexture(dataUrl = defaultSkinDataUrl) {
+  return new Promise((resolve) => {
+    new THREE.TextureLoader().load(dataUrl, (texture) => {
+      texture.magFilter = THREE.NearestFilter;
+      texture.minFilter = THREE.NearestFilter;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      resolve(texture);
+    });
+  });
+}
+
+const playerVisualRoot = new THREE.Group();
+world.add(playerVisualRoot);
+
+const hitboxMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(PLAYER_RADIUS * 2, PLAYER_HEIGHT, PLAYER_RADIUS * 2),
+  new THREE.MeshBasicMaterial({ color: '#00ff95', wireframe: true }),
+);
+hitboxMesh.visible = false;
+playerVisualRoot.add(hitboxMesh);
+
+let playerVisualMesh = null;
+async function refreshPlayerSkin() {
+  const texture = await loadSkinTexture(playerSkinDataUrl || defaultSkinDataUrl);
+  if (playerVisualMesh) {
+    playerVisualRoot.remove(playerVisualMesh);
+    playerVisualMesh.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.geometry?.dispose();
+        obj.material?.dispose();
+      }
+    });
+  }
+  playerVisualMesh = createPlayerMesh(texture);
+  playerVisualRoot.add(playerVisualMesh);
+}
+
+function updatePlayerVisual() {
+  playerVisualRoot.visible = worldActive;
+  if (!worldActive) return;
+  const feetY = camera.position.y - PLAYER_EYE_HEIGHT;
+  playerVisualRoot.position.set(camera.position.x, feetY, camera.position.z);
+  playerVisualRoot.rotation.y = yaw;
+  hitboxMesh.position.set(0, PLAYER_HEIGHT * 0.5, 0);
+  hitboxMesh.visible = showHitbox;
+  if (playerVisualMesh) playerVisualMesh.visible = thirdPersonEnabled;
+}
+
+function updateViewCamera() {
+  if (!thirdPersonEnabled) return camera;
+  const pivot = new THREE.Vector3(camera.position.x, camera.position.y - 0.35, camera.position.z);
+  const offset = new THREE.Vector3(0, 0.9, 3.4);
+  offset.applyAxisAngle(up, yaw + Math.PI);
+  const pitchLift = Math.sin(pitch) * 1.2;
+  thirdPersonCamera.position.copy(pivot).add(offset).add(new THREE.Vector3(0, -pitchLift, 0));
+  thirdPersonCamera.lookAt(pivot);
+  return thirdPersonCamera;
+}
 
 function groundLevelAt(x, z) {
   const tx = THREE.MathUtils.clamp(Math.round(x), 0, WORLD_SIZE - 1);
@@ -939,7 +1135,8 @@ function setModeStatus() {
   }
 
   const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
-  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | Time ${timeSpeed}x | Press M for map`;
+  const viewMode = thirdPersonEnabled ? 'Third Person' : 'First Person';
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | ${viewMode} | Time ${timeSpeed}x | Press M for map`;
 }
 
 function setTimeSpeed(speed) {
@@ -1057,6 +1254,8 @@ function startWorld(worldData) {
   yaw = Math.PI * 0.2;
   pitch = -0.2;
   flyMode = !!options.startFlyMode;
+  thirdPersonEnabled = false;
+  showHitbox = false;
   verticalVelocity = 0;
 
   const worlds = loadWorldSaves();
@@ -1137,6 +1336,44 @@ function renderWorldList() {
 optionStartFly.addEventListener('change', () => {
   options.startFlyMode = optionStartFly.checked;
   saveOptions(options);
+});
+
+function isValidMinecraftSkinSize(width, height) {
+  if (width <= 0 || height <= 0) return false;
+  const isSquare = width === height;
+  const isClassic = width === height * 2;
+  const widthScaled = width % 64 === 0;
+  return widthScaled && (isSquare || isClassic);
+}
+
+skinUploadInput.addEventListener('change', () => {
+  const [file] = skinUploadInput.files || [];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.addEventListener('load', () => {
+    const rawDataUrl = String(reader.result || '');
+    const img = new Image();
+    img.addEventListener('load', async () => {
+      if (!isValidMinecraftSkinSize(img.width, img.height)) {
+        window.alert('Please use a valid Minecraft skin PNG (64x64 / 64x32 or HD multiples).');
+        return;
+      }
+      playerSkinDataUrl = rawDataUrl;
+      savePlayerSkinDataUrl(playerSkinDataUrl);
+      skinPreviewEl.src = playerSkinDataUrl;
+      await refreshPlayerSkin();
+    });
+    img.src = rawDataUrl;
+  });
+  reader.readAsDataURL(file);
+});
+
+clearSkinBtn.addEventListener('click', async () => {
+  playerSkinDataUrl = defaultSkinDataUrl;
+  savePlayerSkinDataUrl(playerSkinDataUrl);
+  skinPreviewEl.src = playerSkinDataUrl;
+  skinUploadInput.value = '';
+  await refreshPlayerSkin();
 });
 
 createWorldBtn.addEventListener('click', () => {
@@ -1241,6 +1478,18 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
+  if (event.code === 'F5' && !event.repeat) {
+    event.preventDefault();
+    thirdPersonEnabled = !thirdPersonEnabled;
+    setModeStatus();
+    return;
+  }
+
+  if (event.code === 'KeyH' && !event.repeat) {
+    showHitbox = !showHitbox;
+    return;
+  }
+
   if (mapOpen) return;
   activeKeys.add(event.code);
 
@@ -1288,8 +1537,11 @@ document.addEventListener('mousemove', (event) => {
 });
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = aspect;
+  thirdPersonCamera.aspect = aspect;
   camera.updateProjectionMatrix();
+  thirdPersonCamera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
@@ -1303,12 +1555,14 @@ function tick(now) {
 
   updateDayNight(dt);
   moveCamera(dt);
+  updatePlayerVisual();
+  const activeCamera = updateViewCamera();
   if (worldActive) {
-    chunkManager.update(camera);
+    chunkManager.update(activeCamera);
     setModeStatus();
     drawMaps();
   }
-  renderer.render(scene, camera);
+  renderer.render(scene, activeCamera);
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);

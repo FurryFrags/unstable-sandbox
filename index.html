@@ -36,6 +36,16 @@
           Start in fly mode
         </label>
       </section>
+
+      <section>
+        <h2>Player Skin</h2>
+        <p>Upload a Minecraft skin PNG (64x64 or 64x32, including HD multiples).</p>
+        <div class="skin-controls">
+          <input id="skin-upload-input" type="file" accept="image/png" />
+          <button id="clear-skin-btn" type="button">Use Default Skin</button>
+        </div>
+        <img id="skin-preview" class="skin-preview" alt="Player skin preview" />
+      </section>
     </div>
 
     <div id="world-hud" class="hud hidden">
@@ -44,6 +54,8 @@
         <li><strong>Click</strong> to lock mouse</li>
         <li><strong>WASD</strong> move</li>
         <li><strong>Space / Shift</strong> fly up/down</li>
+        <li><strong>F5</strong> toggle third person</li>
+        <li><strong>H</strong> toggle hitbox</li>
         <li><strong>Esc</strong> unlock pointer</li>
       </ul>
       <p id="status">Loading world…</p>
