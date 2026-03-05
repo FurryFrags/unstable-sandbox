@@ -138,7 +138,10 @@ const tmpLookDirection = new THREE.Vector3();
 const SKIN_ATLAS_SIZE = 64;
 const defaultSkinDataUrl = createDefaultMinecraftSkinDataUrl();
 let playerSkinDataUrl = loadPlayerSkinDataUrl();
-let thirdPersonEnabled = false;
+const VIEW_MODE_FIRST_PERSON = 0;
+const VIEW_MODE_THIRD_PERSON_BACK = 1;
+const VIEW_MODE_THIRD_PERSON_FRONT = 2;
+let viewMode = VIEW_MODE_FIRST_PERSON;
 let showHitbox = false;
 
 const MINI_MAP_FPS = 18;
@@ -765,6 +768,18 @@ const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
 
+function isThirdPersonView() {
+  return viewMode !== VIEW_MODE_FIRST_PERSON;
+}
+
+function isFrontThirdPersonView() {
+  return viewMode === VIEW_MODE_THIRD_PERSON_FRONT;
+}
+
+function cycleViewMode() {
+  viewMode = (viewMode + 1) % 3;
+}
+
 function uvRect(x, y, w, h, atlasW = SKIN_ATLAS_SIZE, atlasH = SKIN_ATLAS_SIZE) {
   return { x, y, w, h, atlasW, atlasH };
 }
@@ -791,7 +806,7 @@ function createSkinBox(width, height, depth, faces) {
   return geometry;
 }
 
-function createPlayerMesh(texture) {
+function createPlayerMesh(texture, { isLegacySkin = false } = {}) {
   const mat = new THREE.MeshStandardMaterial({ map: texture, transparent: true, alphaTest: 0.1 });
   const group = new THREE.Group();
 
@@ -819,7 +834,16 @@ function createPlayerMesh(texture) {
   );
   rightArm.position.set(-0.375, 1.05, 0);
 
-  const leftArm = rightArm.clone();
+  const leftArm = new THREE.Mesh(
+    createSkinBox(0.25, 0.75, 0.25, isLegacySkin
+      ? {
+        right: uvRect(40, 20, 4, 12), left: uvRect(48, 20, 4, 12), top: uvRect(44, 16, 4, 4), bottom: uvRect(48, 16, 4, 4), front: uvRect(44, 20, 4, 12), back: uvRect(52, 20, 4, 12),
+      }
+      : {
+        right: uvRect(32, 52, 4, 12), left: uvRect(40, 52, 4, 12), top: uvRect(36, 48, 4, 4), bottom: uvRect(40, 48, 4, 4), front: uvRect(36, 52, 4, 12), back: uvRect(44, 52, 4, 12),
+      }),
+    mat,
+  );
   leftArm.position.set(0.375, 1.05, 0);
 
   const rightLeg = new THREE.Mesh(
@@ -830,7 +854,16 @@ function createPlayerMesh(texture) {
   );
   rightLeg.position.set(-0.125, 0.3, 0);
 
-  const leftLeg = rightLeg.clone();
+  const leftLeg = new THREE.Mesh(
+    createSkinBox(0.25, 0.75, 0.25, isLegacySkin
+      ? {
+        right: uvRect(0, 20, 4, 12), left: uvRect(8, 20, 4, 12), top: uvRect(4, 16, 4, 4), bottom: uvRect(8, 16, 4, 4), front: uvRect(4, 20, 4, 12), back: uvRect(12, 20, 4, 12),
+      }
+      : {
+        right: uvRect(16, 52, 4, 12), left: uvRect(24, 52, 4, 12), top: uvRect(20, 48, 4, 4), bottom: uvRect(24, 48, 4, 4), front: uvRect(20, 52, 4, 12), back: uvRect(28, 52, 4, 12),
+      }),
+    mat,
+  );
   leftLeg.position.set(0.125, 0.3, 0);
 
   group.add(head, body, rightArm, leftArm, rightLeg, leftLeg);
@@ -861,6 +894,7 @@ playerVisualRoot.add(hitboxMesh);
 let playerVisualMesh = null;
 async function refreshPlayerSkin() {
   const texture = await loadSkinTexture(playerSkinDataUrl || defaultSkinDataUrl);
+  const isLegacySkin = texture.image && texture.image.width === texture.image.height * 2;
   if (playerVisualMesh) {
     playerVisualRoot.remove(playerVisualMesh);
     playerVisualMesh.traverse((obj) => {
@@ -870,7 +904,7 @@ async function refreshPlayerSkin() {
       }
     });
   }
-  playerVisualMesh = createPlayerMesh(texture);
+  playerVisualMesh = createPlayerMesh(texture, { isLegacySkin });
   playerVisualRoot.add(playerVisualMesh);
 }
 
@@ -882,14 +916,15 @@ function updatePlayerVisual() {
   playerVisualRoot.rotation.y = yaw;
   hitboxMesh.position.set(0, PLAYER_HEIGHT * 0.5, 0);
   hitboxMesh.visible = showHitbox;
-  if (playerVisualMesh) playerVisualMesh.visible = thirdPersonEnabled;
+  if (playerVisualMesh) playerVisualMesh.visible = isThirdPersonView();
 }
 
 function updateViewCamera() {
-  if (!thirdPersonEnabled) return camera;
+  if (!isThirdPersonView()) return camera;
   const pivot = new THREE.Vector3(camera.position.x, camera.position.y - 0.35, camera.position.z);
   const offset = new THREE.Vector3(0, 0.9, 3.4);
-  offset.applyAxisAngle(up, yaw + Math.PI);
+  const yawOffset = viewMode === VIEW_MODE_THIRD_PERSON_BACK ? yaw + Math.PI : yaw;
+  offset.applyAxisAngle(up, yawOffset);
   const pitchLift = Math.sin(pitch) * 1.2;
   thirdPersonCamera.position.copy(pivot).add(offset).add(new THREE.Vector3(0, -pitchLift, 0));
   thirdPersonCamera.lookAt(pivot);
@@ -1135,8 +1170,12 @@ function setModeStatus() {
   }
 
   const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
-  const viewMode = thirdPersonEnabled ? 'Third Person' : 'First Person';
-  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | ${viewMode} | Time ${timeSpeed}x | Press M for map`;
+  const viewLabel = viewMode === VIEW_MODE_FIRST_PERSON
+    ? 'First Person'
+    : viewMode === VIEW_MODE_THIRD_PERSON_BACK
+      ? 'Third Person (Back)'
+      : 'Third Person (Front)';
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | ${viewLabel} | Time ${timeSpeed}x | Press P to switch view | Press M for map`;
 }
 
 function setTimeSpeed(speed) {
@@ -1179,6 +1218,11 @@ function moveCamera(dt) {
   if (flyMode && (activeKeys.has('ShiftLeft') || activeKeys.has('ShiftRight'))) moveInput.y -= 1;
 
   if (moveInput.lengthSq() > 0) moveInput.normalize();
+  if (isFrontThirdPersonView()) {
+    moveInput.x *= -1;
+    moveInput.y *= -1;
+    moveInput.z *= -1;
+  }
 
   const baseSpeed = activeKeys.has('ControlLeft') ? 34 : 18;
   const speed = flyMode ? baseSpeed * FLY_SPEED_MULTIPLIER : baseSpeed;
@@ -1254,7 +1298,7 @@ function startWorld(worldData) {
   yaw = Math.PI * 0.2;
   pitch = -0.2;
   flyMode = !!options.startFlyMode;
-  thirdPersonEnabled = false;
+  viewMode = VIEW_MODE_FIRST_PERSON;
   showHitbox = false;
   verticalVelocity = 0;
 
@@ -1478,9 +1522,9 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.code === 'F5' && !event.repeat) {
+  if (event.code === 'KeyP' && !event.repeat) {
     event.preventDefault();
-    thirdPersonEnabled = !thirdPersonEnabled;
+    cycleViewMode();
     setModeStatus();
     return;
   }
@@ -1531,8 +1575,9 @@ document.addEventListener('pointerlockchange', () => {
 
 document.addEventListener('mousemove', (event) => {
   if (!pointerLocked || !worldActive) return;
-  yaw -= event.movementX * 0.0023;
-  pitch -= event.movementY * 0.0023;
+  const lookDir = isFrontThirdPersonView() ? -1 : 1;
+  yaw -= event.movementX * 0.0023 * lookDir;
+  pitch -= event.movementY * 0.0023 * lookDir;
   pitch = THREE.MathUtils.clamp(pitch, -1.52, 1.52);
 });
 
