@@ -1220,7 +1220,6 @@ function moveCamera(dt) {
   if (moveInput.lengthSq() > 0) moveInput.normalize();
   if (isFrontThirdPersonView()) {
     moveInput.x *= -1;
-    moveInput.y *= -1;
     moveInput.z *= -1;
   }
 
