@@ -923,7 +923,7 @@ function updateViewCamera() {
   if (!isThirdPersonView()) return camera;
   const pivot = new THREE.Vector3(camera.position.x, camera.position.y - 0.35, camera.position.z);
   const offset = new THREE.Vector3(0, 0.9, 3.4);
-  const yawOffset = viewMode === VIEW_MODE_THIRD_PERSON_BACK ? yaw + Math.PI : yaw;
+  const yawOffset = viewMode === VIEW_MODE_THIRD_PERSON_FRONT ? yaw + Math.PI : yaw;
   offset.applyAxisAngle(up, yawOffset);
   const pitchLift = Math.sin(pitch) * 1.2;
   thirdPersonCamera.position.copy(pivot).add(offset).add(new THREE.Vector3(0, -pitchLift, 0));
@@ -1575,9 +1575,10 @@ document.addEventListener('pointerlockchange', () => {
 
 document.addEventListener('mousemove', (event) => {
   if (!pointerLocked || !worldActive) return;
-  const lookDir = isFrontThirdPersonView() ? -1 : 1;
-  yaw -= event.movementX * 0.0023 * lookDir;
-  pitch -= event.movementY * 0.0023 * lookDir;
+  const horizontalLookDir = isFrontThirdPersonView() ? -1 : 1;
+  const verticalLookDir = isFrontThirdPersonView() ? -1 : 1;
+  yaw -= event.movementX * 0.0023 * horizontalLookDir;
+  pitch -= event.movementY * 0.0023 * verticalLookDir;
   pitch = THREE.MathUtils.clamp(pitch, -1.52, 1.52);
 });
 
