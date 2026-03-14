@@ -54,6 +54,7 @@ const DEFAULT_WORLD_GEN_PROFILE = Object.freeze({
 const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
 const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
 const PLAYER_SKIN_KEY = 'voxel-sandbox-player-skin-v1';
+const PLAYER_SKIN_META_KEY = 'voxel-sandbox-player-skin-meta-v1';
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -138,6 +139,7 @@ const tmpLookDirection = new THREE.Vector3();
 const SKIN_ATLAS_SIZE = 64;
 const defaultSkinDataUrl = createDefaultMinecraftSkinDataUrl();
 let playerSkinDataUrl = loadPlayerSkinDataUrl();
+let playerSkinIsLegacy = loadPlayerSkinMeta().isLegacy;
 const VIEW_MODE_FIRST_PERSON = 0;
 const VIEW_MODE_THIRD_PERSON_BACK = 1;
 const VIEW_MODE_THIRD_PERSON_FRONT = 2;
@@ -203,6 +205,22 @@ function savePlayerSkinDataUrl(dataUrl) {
     localStorage.removeItem(PLAYER_SKIN_KEY);
   } else {
     localStorage.setItem(PLAYER_SKIN_KEY, dataUrl);
+  }
+}
+
+function loadPlayerSkinMeta() {
+  try {
+    return { isLegacy: false, ...JSON.parse(localStorage.getItem(PLAYER_SKIN_META_KEY) || '{}') };
+  } catch {
+    return { isLegacy: false };
+  }
+}
+
+function savePlayerSkinMeta(meta) {
+  if (!meta || !meta.isLegacy) {
+    localStorage.removeItem(PLAYER_SKIN_META_KEY);
+  } else {
+    localStorage.setItem(PLAYER_SKIN_META_KEY, JSON.stringify({ isLegacy: true }));
   }
 }
 
@@ -894,7 +912,7 @@ playerVisualRoot.add(hitboxMesh);
 let playerVisualMesh = null;
 async function refreshPlayerSkin() {
   const texture = await loadSkinTexture(playerSkinDataUrl || defaultSkinDataUrl);
-  const isLegacySkin = texture.image && texture.image.width === texture.image.height * 2;
+  const isLegacySkin = !!playerSkinIsLegacy;
   if (playerVisualMesh) {
     playerVisualRoot.remove(playerVisualMesh);
     playerVisualMesh.traverse((obj) => {
@@ -1389,6 +1407,27 @@ function isValidMinecraftSkinSize(width, height) {
   return widthScaled && (isSquare || isClassic);
 }
 
+function detectMinecraftSkinFormat(width, height) {
+  const valid = isValidMinecraftSkinSize(width, height);
+  if (!valid) return { valid: false, isLegacy: false, atlasSize: 0 };
+  return {
+    valid: true,
+    isLegacy: width === height * 2,
+    atlasSize: width,
+  };
+}
+
+function normalizeMinecraftSkinDataUrl(image, format) {
+  const atlasCanvas = document.createElement('canvas');
+  atlasCanvas.width = format.atlasSize;
+  atlasCanvas.height = format.atlasSize;
+  const ctx = atlasCanvas.getContext('2d');
+  if (!ctx) return '';
+  ctx.clearRect(0, 0, atlasCanvas.width, atlasCanvas.height);
+  ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, image.width, image.height);
+  return atlasCanvas.toDataURL('image/png');
+}
+
 skinUploadInput.addEventListener('change', () => {
   const [file] = skinUploadInput.files || [];
   if (!file) return;
@@ -1397,12 +1436,22 @@ skinUploadInput.addEventListener('change', () => {
     const rawDataUrl = String(reader.result || '');
     const img = new Image();
     img.addEventListener('load', async () => {
-      if (!isValidMinecraftSkinSize(img.width, img.height)) {
+      const format = detectMinecraftSkinFormat(img.width, img.height);
+      if (!format.valid) {
         window.alert('Please use a valid Minecraft skin PNG (64x64 / 64x32 or HD multiples).');
         return;
       }
-      playerSkinDataUrl = rawDataUrl;
+
+      const normalizedDataUrl = normalizeMinecraftSkinDataUrl(img, format);
+      if (!normalizedDataUrl) {
+        window.alert('Could not process this skin file. Please try another PNG.');
+        return;
+      }
+
+      playerSkinDataUrl = normalizedDataUrl;
+      playerSkinIsLegacy = format.isLegacy;
       savePlayerSkinDataUrl(playerSkinDataUrl);
+      savePlayerSkinMeta({ isLegacy: playerSkinIsLegacy });
       skinPreviewEl.src = playerSkinDataUrl;
       await refreshPlayerSkin();
     });
@@ -1413,7 +1462,9 @@ skinUploadInput.addEventListener('change', () => {
 
 clearSkinBtn.addEventListener('click', async () => {
   playerSkinDataUrl = defaultSkinDataUrl;
+  playerSkinIsLegacy = false;
   savePlayerSkinDataUrl(playerSkinDataUrl);
+  savePlayerSkinMeta({ isLegacy: false });
   skinPreviewEl.src = playerSkinDataUrl;
   skinUploadInput.value = '';
   await refreshPlayerSkin();
