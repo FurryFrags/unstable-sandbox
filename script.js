@@ -53,8 +53,6 @@ const DEFAULT_WORLD_GEN_PROFILE = Object.freeze({
 
 const WORLD_SAVE_KEY = 'voxel-sandbox-worlds-v1';
 const WORLD_OPTION_KEY = 'voxel-sandbox-options-v1';
-const PLAYER_SKIN_KEY = 'voxel-sandbox-player-skin-v1';
-const PLAYER_SKIN_META_KEY = 'voxel-sandbox-player-skin-meta-v1';
 
 const canvas = document.getElementById('scene');
 const statusEl = document.getElementById('status');
@@ -75,9 +73,6 @@ const fullMapCanvas = document.getElementById('full-map-canvas');
 const fullMapCtx = fullMapCanvas.getContext('2d');
 const closeMapBtn = document.getElementById('close-map-btn');
 const mapContextMenuEl = document.getElementById('map-context-menu');
-const skinUploadInput = document.getElementById('skin-upload-input');
-const clearSkinBtn = document.getElementById('clear-skin-btn');
-const skinPreviewEl = document.getElementById('skin-preview');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -89,7 +84,6 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#87b9ff');
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, WORLD_SIZE * 3);
-const thirdPersonCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, WORLD_SIZE * 3);
 camera.position.set(12, 18, 12);
 
 const hemiLight = new THREE.HemisphereLight('#dbefff', '#4e633f', 0.8);
@@ -138,12 +132,6 @@ const tmpLookDirection = new THREE.Vector3();
 
 const SKIN_ATLAS_SIZE = 64;
 const defaultSkinDataUrl = createDefaultMinecraftSkinDataUrl();
-let playerSkinDataUrl = loadPlayerSkinDataUrl();
-let playerSkinIsLegacy = loadPlayerSkinMeta().isLegacy;
-const VIEW_MODE_FIRST_PERSON = 0;
-const VIEW_MODE_THIRD_PERSON_BACK = 1;
-const VIEW_MODE_THIRD_PERSON_FRONT = 2;
-let viewMode = VIEW_MODE_FIRST_PERSON;
 let showHitbox = false;
 
 const MINI_MAP_FPS = 18;
@@ -196,33 +184,9 @@ function createDefaultMinecraftSkinDataUrl() {
   return skinCanvas.toDataURL('image/png');
 }
 
-function loadPlayerSkinDataUrl() {
-  return localStorage.getItem(PLAYER_SKIN_KEY) || defaultSkinDataUrl;
-}
 
-function savePlayerSkinDataUrl(dataUrl) {
-  if (!dataUrl || dataUrl === defaultSkinDataUrl) {
-    localStorage.removeItem(PLAYER_SKIN_KEY);
-  } else {
-    localStorage.setItem(PLAYER_SKIN_KEY, dataUrl);
-  }
-}
 
-function loadPlayerSkinMeta() {
-  try {
-    return { isLegacy: false, ...JSON.parse(localStorage.getItem(PLAYER_SKIN_META_KEY) || '{}') };
-  } catch {
-    return { isLegacy: false };
-  }
-}
 
-function savePlayerSkinMeta(meta) {
-  if (!meta || !meta.isLegacy) {
-    localStorage.removeItem(PLAYER_SKIN_META_KEY);
-  } else {
-    localStorage.setItem(PLAYER_SKIN_META_KEY, JSON.stringify({ isLegacy: true }));
-  }
-}
 
 function loadWorldSaves() {
   try {
@@ -271,7 +235,6 @@ function saveOptions(options) {
 
 const options = loadOptions();
 optionStartFly.checked = !!options.startFlyMode;
-skinPreviewEl.src = playerSkinDataUrl || defaultSkinDataUrl;
 refreshPlayerSkin();
 
 function hashStringToSeed(value) {
@@ -786,18 +749,6 @@ const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
 
-function isThirdPersonView() {
-  return viewMode !== VIEW_MODE_FIRST_PERSON;
-}
-
-function isFrontThirdPersonView() {
-  return viewMode === VIEW_MODE_THIRD_PERSON_FRONT;
-}
-
-function cycleViewMode() {
-  viewMode = (viewMode + 1) % 3;
-}
-
 function uvRect(x, y, w, h, atlasW = SKIN_ATLAS_SIZE, atlasH = SKIN_ATLAS_SIZE) {
   return { x, y, w, h, atlasW, atlasH };
 }
@@ -911,8 +862,8 @@ playerVisualRoot.add(hitboxMesh);
 
 let playerVisualMesh = null;
 async function refreshPlayerSkin() {
-  const texture = await loadSkinTexture(playerSkinDataUrl || defaultSkinDataUrl);
-  const isLegacySkin = !!playerSkinIsLegacy;
+  const texture = await loadSkinTexture(defaultSkinDataUrl);
+  const isLegacySkin = false;
   if (playerVisualMesh) {
     playerVisualRoot.remove(playerVisualMesh);
     playerVisualMesh.traverse((obj) => {
@@ -934,19 +885,11 @@ function updatePlayerVisual() {
   playerVisualRoot.rotation.y = yaw;
   hitboxMesh.position.set(0, PLAYER_HEIGHT * 0.5, 0);
   hitboxMesh.visible = showHitbox;
-  if (playerVisualMesh) playerVisualMesh.visible = isThirdPersonView();
+  if (playerVisualMesh) playerVisualMesh.visible = false;
 }
 
 function updateViewCamera() {
-  if (!isThirdPersonView()) return camera;
-  const pivot = new THREE.Vector3(camera.position.x, camera.position.y - 0.35, camera.position.z);
-  const offset = new THREE.Vector3(0, 0.9, 3.4);
-  const yawOffset = viewMode === VIEW_MODE_THIRD_PERSON_FRONT ? yaw + Math.PI : yaw;
-  offset.applyAxisAngle(up, yawOffset);
-  const pitchLift = Math.sin(pitch) * 1.2;
-  thirdPersonCamera.position.copy(pivot).add(offset).add(new THREE.Vector3(0, -pitchLift, 0));
-  thirdPersonCamera.lookAt(pivot);
-  return thirdPersonCamera;
+  return camera;
 }
 
 function groundLevelAt(x, z) {
@@ -1188,12 +1131,7 @@ function setModeStatus() {
   }
 
   const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
-  const viewLabel = viewMode === VIEW_MODE_FIRST_PERSON
-    ? 'First Person'
-    : viewMode === VIEW_MODE_THIRD_PERSON_BACK
-      ? 'Third Person (Back)'
-      : 'Third Person (Front)';
-  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | ${viewLabel} | Time ${timeSpeed}x | Press P to switch view | Press M for map`;
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | First Person | Time ${timeSpeed}x | Press M for map`;
 }
 
 function setTimeSpeed(speed) {
@@ -1236,10 +1174,6 @@ function moveCamera(dt) {
   if (flyMode && (activeKeys.has('ShiftLeft') || activeKeys.has('ShiftRight'))) moveInput.y -= 1;
 
   if (moveInput.lengthSq() > 0) moveInput.normalize();
-  if (isFrontThirdPersonView()) {
-    moveInput.x *= -1;
-    moveInput.z *= -1;
-  }
 
   const baseSpeed = activeKeys.has('ControlLeft') ? 34 : 18;
   const speed = flyMode ? baseSpeed * FLY_SPEED_MULTIPLIER : baseSpeed;
@@ -1315,7 +1249,6 @@ function startWorld(worldData) {
   yaw = Math.PI * 0.2;
   pitch = -0.2;
   flyMode = !!options.startFlyMode;
-  viewMode = VIEW_MODE_FIRST_PERSON;
   showHitbox = false;
   verticalVelocity = 0;
 
@@ -1397,77 +1330,6 @@ function renderWorldList() {
 optionStartFly.addEventListener('change', () => {
   options.startFlyMode = optionStartFly.checked;
   saveOptions(options);
-});
-
-function isValidMinecraftSkinSize(width, height) {
-  if (width <= 0 || height <= 0) return false;
-  const isSquare = width === height;
-  const isClassic = width === height * 2;
-  const widthScaled = width % 64 === 0;
-  return widthScaled && (isSquare || isClassic);
-}
-
-function detectMinecraftSkinFormat(width, height) {
-  const valid = isValidMinecraftSkinSize(width, height);
-  if (!valid) return { valid: false, isLegacy: false, atlasSize: 0 };
-  return {
-    valid: true,
-    isLegacy: width === height * 2,
-    atlasSize: width,
-  };
-}
-
-function normalizeMinecraftSkinDataUrl(image, format) {
-  const atlasCanvas = document.createElement('canvas');
-  atlasCanvas.width = format.atlasSize;
-  atlasCanvas.height = format.atlasSize;
-  const ctx = atlasCanvas.getContext('2d');
-  if (!ctx) return '';
-  ctx.clearRect(0, 0, atlasCanvas.width, atlasCanvas.height);
-  ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, image.width, image.height);
-  return atlasCanvas.toDataURL('image/png');
-}
-
-skinUploadInput.addEventListener('change', () => {
-  const [file] = skinUploadInput.files || [];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.addEventListener('load', () => {
-    const rawDataUrl = String(reader.result || '');
-    const img = new Image();
-    img.addEventListener('load', async () => {
-      const format = detectMinecraftSkinFormat(img.width, img.height);
-      if (!format.valid) {
-        window.alert('Please use a valid Minecraft skin PNG (64x64 / 64x32 or HD multiples).');
-        return;
-      }
-
-      const normalizedDataUrl = normalizeMinecraftSkinDataUrl(img, format);
-      if (!normalizedDataUrl) {
-        window.alert('Could not process this skin file. Please try another PNG.');
-        return;
-      }
-
-      playerSkinDataUrl = normalizedDataUrl;
-      playerSkinIsLegacy = format.isLegacy;
-      savePlayerSkinDataUrl(playerSkinDataUrl);
-      savePlayerSkinMeta({ isLegacy: playerSkinIsLegacy });
-      skinPreviewEl.src = playerSkinDataUrl;
-      await refreshPlayerSkin();
-    });
-    img.src = rawDataUrl;
-  });
-  reader.readAsDataURL(file);
-});
-
-clearSkinBtn.addEventListener('click', async () => {
-  playerSkinDataUrl = defaultSkinDataUrl;
-  playerSkinIsLegacy = false;
-  savePlayerSkinDataUrl(playerSkinDataUrl);
-  savePlayerSkinMeta({ isLegacy: false });
-  skinPreviewEl.src = playerSkinDataUrl;
-  skinUploadInput.value = '';
-  await refreshPlayerSkin();
 });
 
 createWorldBtn.addEventListener('click', () => {
@@ -1572,13 +1434,6 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.code === 'KeyP' && !event.repeat) {
-    event.preventDefault();
-    cycleViewMode();
-    setModeStatus();
-    return;
-  }
-
   if (event.code === 'KeyH' && !event.repeat) {
     showHitbox = !showHitbox;
     return;
@@ -1625,19 +1480,15 @@ document.addEventListener('pointerlockchange', () => {
 
 document.addEventListener('mousemove', (event) => {
   if (!pointerLocked || !worldActive) return;
-  const horizontalLookDir = isFrontThirdPersonView() ? -1 : 1;
-  const verticalLookDir = isFrontThirdPersonView() ? -1 : 1;
-  yaw -= event.movementX * 0.0023 * horizontalLookDir;
-  pitch -= event.movementY * 0.0023 * verticalLookDir;
+  yaw -= event.movementX * 0.0023;
+  pitch -= event.movementY * 0.0023;
   pitch = THREE.MathUtils.clamp(pitch, -1.52, 1.52);
 });
 
 window.addEventListener('resize', () => {
   const aspect = window.innerWidth / window.innerHeight;
   camera.aspect = aspect;
-  thirdPersonCamera.aspect = aspect;
   camera.updateProjectionMatrix();
-  thirdPersonCamera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
