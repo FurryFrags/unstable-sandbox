@@ -73,6 +73,8 @@ const fullMapCanvas = document.getElementById('full-map-canvas');
 const fullMapCtx = fullMapCanvas.getContext('2d');
 const closeMapBtn = document.getElementById('close-map-btn');
 const mapContextMenuEl = document.getElementById('map-context-menu');
+const addGrazerBtn = document.getElementById('add-grazer-btn');
+const addHunterBtn = document.getElementById('add-hunter-btn');
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
@@ -138,11 +140,47 @@ const MINI_MAP_FPS = 18;
 
 const PIN_CLICK_RADIUS_WORLD = 10;
 
+const MAX_NATURAL_ANIMALS = 48;
+const NATURAL_SPAWN_INTERVAL = 8;
+const ANIMAL_MUTATION_FACTOR = 0.18;
+const ANIMAL_TYPES = Object.freeze({
+  grazer: {
+    name: 'Grazer',
+    color: '#b9d981',
+    baseWeight: 24,
+    radius: 0.45,
+    speed: 3.4,
+    maxEnergy: 120,
+    duplicationThreshold: 98,
+    foodGain: 42,
+    prey: null,
+  },
+  hunter: {
+    name: 'Hunter',
+    color: '#d4765f',
+    baseWeight: 42,
+    radius: 0.52,
+    speed: 4.2,
+    maxEnergy: 140,
+    duplicationThreshold: 112,
+    foodGain: 60,
+    prey: 'grazer',
+  },
+});
+
 const terrainHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const waterHeightCache = new Int16Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const sandRadiusCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const biomeCache = new Int8Array(WORLD_SIZE * WORLD_SIZE).fill(-1);
 const treeCenterCache = new Map();
+
+const animalGroup = new THREE.Group();
+world.add(animalGroup);
+
+const animals = [];
+const animalMeshes = new Map();
+let animalIdCounter = 1;
+let naturalSpawnTimer = 0;
 
 function createDefaultMinecraftSkinDataUrl() {
   const skinCanvas = document.createElement('canvas');
@@ -749,6 +787,227 @@ const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
 
+
+function randomWorldGroundPoint() {
+  const x = 4 + Math.random() * (WORLD_SIZE - 8);
+  const z = 4 + Math.random() * (WORLD_SIZE - 8);
+  const y = terrainHeight(Math.floor(x), Math.floor(z)) + 1;
+  return { x, y, z };
+}
+
+function clampAnimalToGround(animal) {
+  const groundY = terrainHeight(Math.floor(animal.position.x), Math.floor(animal.position.z)) + animal.radius;
+  animal.position.y = groundY;
+}
+
+function randomNeuronSet() {
+  return [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+}
+
+function randomWeightSet() {
+  return [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+}
+
+function createAnimal(type, { x, y, z } = randomWorldGroundPoint(), inherited = null) {
+  const profile = ANIMAL_TYPES[type];
+  if (!profile) return null;
+  const radius = Math.max(0.2, inherited?.radius ?? profile.radius);
+  const neurons = inherited?.neurons ? [...inherited.neurons] : randomNeuronSet();
+  const weights = inherited?.weights ? [...inherited.weights] : randomWeightSet();
+  const animal = {
+    id: `a-${animalIdCounter++}`,
+    type,
+    name: profile.name,
+    radius,
+    weight: Math.max(3, inherited?.weight ?? profile.baseWeight),
+    position: new THREE.Vector3(x, y ?? 0, z),
+    velocity: new THREE.Vector3(),
+    heading: Math.random() * Math.PI * 2,
+    energy: inherited?.energy ?? profile.maxEnergy * 0.72,
+    age: 0,
+    hunger: 0,
+    needs: {
+      food: 0,
+      safety: Math.random() * 0.3,
+      duplicate: 0,
+    },
+    neurons,
+    weights,
+  };
+  clampAnimalToGround(animal);
+
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 10, 10),
+    new THREE.MeshStandardMaterial({ color: profile.color, roughness: 0.7, metalness: 0.02 }),
+  );
+  mesh.position.copy(animal.position);
+  animalGroup.add(mesh);
+
+  animals.push(animal);
+  animalMeshes.set(animal.id, mesh);
+  return animal;
+}
+
+function removeAnimal(animal) {
+  const idx = animals.findIndex((entry) => entry.id === animal.id);
+  if (idx >= 0) animals.splice(idx, 1);
+  const mesh = animalMeshes.get(animal.id);
+  if (mesh) {
+    animalGroup.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+    animalMeshes.delete(animal.id);
+  }
+}
+
+function mutateValue(value, scale = 1) {
+  return value + (Math.random() * 2 - 1) * ANIMAL_MUTATION_FACTOR * scale;
+}
+
+function duplicateAnimal(animal) {
+  const profile = ANIMAL_TYPES[animal.type];
+  const child = createAnimal(
+    animal.type,
+    {
+      x: THREE.MathUtils.clamp(animal.position.x + (Math.random() * 2 - 1) * 2.6, 2, WORLD_SIZE - 2),
+      y: animal.position.y,
+      z: THREE.MathUtils.clamp(animal.position.z + (Math.random() * 2 - 1) * 2.6, 2, WORLD_SIZE - 2),
+    },
+    {
+      weight: Math.max(3, mutateValue(animal.weight, profile.baseWeight * 0.12)),
+      radius: Math.max(0.25, mutateValue(animal.radius, 0.1)),
+      energy: profile.maxEnergy * 0.42,
+      neurons: animal.neurons.map((n) => mutateValue(n, 0.45)),
+      weights: animal.weights.map((w) => mutateValue(w, 0.45)),
+    },
+  );
+  if (child) {
+    animal.energy *= 0.56;
+    animal.needs.duplicate = 0;
+  }
+}
+
+function findNearestTarget(animal, targetType) {
+  let best = null;
+  let bestDistSq = Infinity;
+  for (const other of animals) {
+    if (other.id === animal.id || other.type !== targetType) continue;
+    const distSq = animal.position.distanceToSquared(other.position);
+    if (distSq < bestDistSq) {
+      best = other;
+      bestDistSq = distSq;
+    }
+  }
+  return best;
+}
+
+function findNearestFoodPoint(animal) {
+  const sampleCount = 12;
+  let best = null;
+  let bestScore = Infinity;
+  for (let i = 0; i < sampleCount; i += 1) {
+    const x = Math.floor(THREE.MathUtils.clamp(animal.position.x + (Math.random() * 2 - 1) * 18, 0, WORLD_SIZE - 1));
+    const z = Math.floor(THREE.MathUtils.clamp(animal.position.z + (Math.random() * 2 - 1) * 18, 0, WORLD_SIZE - 1));
+    const voxel = getVoxelTypeAt(x, terrainHeight(x, z) + 1, z);
+    const score = voxel === BLOCK_APPLE ? 0 : 1 + Math.random();
+    if (score < bestScore) {
+      bestScore = score;
+      best = new THREE.Vector3(x + 0.5, terrainHeight(x, z) + animal.radius, z + 0.5);
+    }
+  }
+  return best;
+}
+
+function updateAnimals(dt) {
+  if (!worldActive) return;
+
+  naturalSpawnTimer += dt;
+  if (naturalSpawnTimer >= NATURAL_SPAWN_INTERVAL) {
+    naturalSpawnTimer = 0;
+    if (animals.length < MAX_NATURAL_ANIMALS) {
+      createAnimal(Math.random() < 0.7 ? 'grazer' : 'hunter');
+    }
+  }
+
+  const toRemove = [];
+  for (const animal of animals) {
+    const profile = ANIMAL_TYPES[animal.type];
+    animal.age += dt;
+    animal.hunger = THREE.MathUtils.clamp(animal.hunger + dt * 0.22, 0, 3);
+    animal.needs.food = animal.hunger;
+    animal.needs.duplicate = THREE.MathUtils.clamp(animal.energy / profile.duplicationThreshold, 0, 1.5);
+
+    const energyDrain = (0.85 + animal.hunger * 0.5 + animal.weight * 0.003) * dt;
+    animal.energy -= energyDrain;
+    if (animal.energy <= 0 || animal.age > 500) {
+      toRemove.push(animal);
+      continue;
+    }
+
+    let target = null;
+    if (profile.prey) {
+      target = findNearestTarget(animal, profile.prey);
+    } else if (animal.needs.food > 0.55) {
+      target = findNearestFoodPoint(animal);
+    }
+
+    const wanderNoise = Math.sin(animal.age * (0.8 + animal.neurons[0])) * animal.weights[0] * 0.05;
+    if (target) {
+      const targetPos = target.position ? target.position : target;
+      const dirX = targetPos.x - animal.position.x;
+      const dirZ = targetPos.z - animal.position.z;
+      animal.heading = Math.atan2(dirX, dirZ) + wanderNoise;
+    } else {
+      animal.heading += (Math.random() - 0.5) * dt * (0.8 + Math.abs(animal.weights[1]));
+    }
+
+    const speedFactor = THREE.MathUtils.clamp(0.6 + animal.needs.food * 0.35 + Math.abs(animal.neurons[1]) * 0.1, 0.5, 1.35);
+    const speed = profile.speed * speedFactor;
+    animal.velocity.x = Math.sin(animal.heading) * speed;
+    animal.velocity.z = Math.cos(animal.heading) * speed;
+
+    animal.position.x = THREE.MathUtils.clamp(animal.position.x + animal.velocity.x * dt, 1, WORLD_SIZE - 1);
+    animal.position.z = THREE.MathUtils.clamp(animal.position.z + animal.velocity.z * dt, 1, WORLD_SIZE - 1);
+    clampAnimalToGround(animal);
+
+    if (profile.prey && target) {
+      const dist = animal.position.distanceTo(target.position);
+      if (dist < animal.radius + target.radius + 0.2) {
+        animal.energy = Math.min(profile.maxEnergy * 1.25, animal.energy + profile.foodGain);
+        animal.hunger = Math.max(0, animal.hunger - 0.85);
+        toRemove.push(target);
+      }
+    } else if (!profile.prey && animal.needs.food > 0.4) {
+      const tx = Math.floor(animal.position.x);
+      const tz = Math.floor(animal.position.z);
+      const topY = terrainHeight(tx, tz) + 1;
+      if (getVoxelTypeAt(tx, topY, tz) === BLOCK_APPLE) {
+        animal.energy = Math.min(profile.maxEnergy * 1.2, animal.energy + profile.foodGain);
+        animal.hunger = Math.max(0, animal.hunger - 0.75);
+      }
+    }
+
+    if (animal.energy >= profile.duplicationThreshold && animals.length < MAX_NATURAL_ANIMALS + 20) {
+      duplicateAnimal(animal);
+    }
+
+    const mesh = animalMeshes.get(animal.id);
+    if (mesh) {
+      mesh.position.copy(animal.position);
+      mesh.scale.setScalar(1 + animal.needs.food * 0.1);
+    }
+  }
+
+  const uniqueRemovals = new Set(toRemove);
+  for (const animal of uniqueRemovals) {
+    if (animals.some((a) => a.id === animal.id)) removeAnimal(animal);
+  }
+}
+
+function clearAnimals() {
+  for (const animal of [...animals]) removeAnimal(animal);
+}
+
 function uvRect(x, y, w, h, atlasW = SKIN_ATLAS_SIZE, atlasH = SKIN_ATLAS_SIZE) {
   return { x, y, w, h, atlasW, atlasH };
 }
@@ -1131,7 +1390,7 @@ function setModeStatus() {
   }
 
   const travelMode = flyMode ? 'Fly ON' : 'Fly OFF';
-  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | First Person | Time ${timeSpeed}x | Press M for map`;
+  statusEl.textContent = `World: ${currentWorld.name} | ${travelMode} | First Person | Time ${timeSpeed}x | Animals ${animals.length} | Press M for map`;
 }
 
 function setTimeSpeed(speed) {
@@ -1226,6 +1485,7 @@ function enterHomeMenu() {
   miniMapEl.classList.add('hidden');
   setMapOpen(false);
   if (document.pointerLockElement) document.exitPointerLock();
+  clearAnimals();
   setModeStatus();
 }
 
@@ -1244,6 +1504,10 @@ function startWorld(worldData) {
   rebuildMapStaticLayers();
   lastMiniMapDrawAt = 0;
   chunkManager.clear();
+  clearAnimals();
+  naturalSpawnTimer = 0;
+  for (let i = 0; i < 8; i += 1) createAnimal('grazer');
+  for (let i = 0; i < 3; i += 1) createAnimal('hunter');
 
   camera.position.set(12, 30, 12);
   yaw = Math.PI * 0.2;
@@ -1326,6 +1590,17 @@ function renderWorldList() {
     worldListEl.append(card);
   }
 }
+
+
+addGrazerBtn?.addEventListener('click', () => {
+  if (!worldActive) return;
+  createAnimal('grazer', randomWorldGroundPoint());
+});
+
+addHunterBtn?.addEventListener('click', () => {
+  if (!worldActive) return;
+  createAnimal('hunter', randomWorldGroundPoint());
+});
 
 optionStartFly.addEventListener('change', () => {
   options.startFlyMode = optionStartFly.checked;
@@ -1502,6 +1777,7 @@ function tick(now) {
 
   updateDayNight(dt);
   moveCamera(dt);
+  updateAnimals(dt * timeSpeed);
   updatePlayerVisual();
   const activeCamera = updateViewCamera();
   if (worldActive) {
