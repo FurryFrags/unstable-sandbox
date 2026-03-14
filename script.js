@@ -783,6 +783,7 @@ const PLAYER_HEIGHT = 1.8;
 const PLAYER_EYE_HEIGHT = 1.62;
 const PLAYER_RADIUS = 0.3;
 const COLLISION_STEP = 0.1;
+const ANIMAL_COLLISION_STEP = 0.08;
 const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
@@ -798,6 +799,60 @@ function randomWorldGroundPoint() {
 function clampAnimalToGround(animal) {
   const groundY = terrainHeight(Math.floor(animal.position.x), Math.floor(animal.position.z)) + animal.radius + 1;
   animal.position.y = groundY;
+}
+
+function getAnimalBounds(position, radius) {
+  return {
+    minX: position.x - radius,
+    maxX: position.x + radius,
+    minY: position.y - radius,
+    maxY: position.y + radius,
+    minZ: position.z - radius,
+    maxZ: position.z + radius,
+  };
+}
+
+function hasAnimalSolidCollision(animal, position = animal.position) {
+  const bounds = getAnimalBounds(position, animal.radius);
+  const minX = Math.floor(bounds.minX);
+  const maxX = Math.floor(bounds.maxX - 1e-6);
+  const minY = Math.floor(bounds.minY);
+  const maxY = Math.floor(bounds.maxY - 1e-6);
+  const minZ = Math.floor(bounds.minZ);
+  const maxZ = Math.floor(bounds.maxZ - 1e-6);
+
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let z = minZ; z <= maxZ; z += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        if (isSolidBlock(getVoxelTypeAt(x, y, z))) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function moveAnimalWithCollisions(animal, axis, amount) {
+  if (amount === 0) return false;
+  const steps = Math.max(1, Math.ceil(Math.abs(amount) / ANIMAL_COLLISION_STEP));
+  const stepAmount = amount / steps;
+  let collided = false;
+
+  for (let i = 0; i < steps; i += 1) {
+    const prevX = animal.position.x;
+    const prevY = animal.position.y;
+    const prevZ = animal.position.z;
+
+    animal.position[axis] += stepAmount;
+    clampAnimalToGround(animal);
+    if (!hasAnimalSolidCollision(animal)) continue;
+
+    animal.position.set(prevX, prevY, prevZ);
+    collided = true;
+    break;
+  }
+
+  return collided;
 }
 
 function randomNeuronSet() {
@@ -966,9 +1021,17 @@ function updateAnimals(dt) {
     animal.velocity.x = Math.sin(animal.heading) * speed;
     animal.velocity.z = Math.cos(animal.heading) * speed;
 
-    animal.position.x = THREE.MathUtils.clamp(animal.position.x + animal.velocity.x * dt, 1, WORLD_SIZE - 1);
-    animal.position.z = THREE.MathUtils.clamp(animal.position.z + animal.velocity.z * dt, 1, WORLD_SIZE - 1);
+    const moveX = animal.velocity.x * dt;
+    const moveZ = animal.velocity.z * dt;
+    const hitX = moveAnimalWithCollisions(animal, 'x', moveX);
+    const hitZ = moveAnimalWithCollisions(animal, 'z', moveZ);
+    animal.position.x = THREE.MathUtils.clamp(animal.position.x, 1, WORLD_SIZE - 1);
+    animal.position.z = THREE.MathUtils.clamp(animal.position.z, 1, WORLD_SIZE - 1);
     clampAnimalToGround(animal);
+
+    if (hitX || hitZ) {
+      animal.heading += (Math.random() < 0.5 ? -1 : 1) * (0.35 + Math.random() * 0.55);
+    }
 
     if (profile.prey && target) {
       const dist = animal.position.distanceTo(target.position);
