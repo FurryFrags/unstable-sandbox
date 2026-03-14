@@ -784,6 +784,9 @@ const PLAYER_EYE_HEIGHT = 1.62;
 const PLAYER_RADIUS = 0.3;
 const COLLISION_STEP = 0.1;
 const ANIMAL_COLLISION_STEP = 0.08;
+const ANIMAL_STEP_HEIGHT = 1.05;
+const ANIMAL_BAR_CANVAS_WIDTH = 120;
+const ANIMAL_BAR_CANVAS_HEIGHT = 58;
 const JUMP_SPEED = 11;
 const GRAVITY = 30;
 const DOUBLE_TAP_MS = 260;
@@ -847,6 +850,13 @@ function moveAnimalWithCollisions(animal, axis, amount) {
     clampAnimalToGround(animal);
     if (!hasAnimalSolidCollision(animal)) continue;
 
+    const steppedPosition = animal.position.clone();
+    steppedPosition.y += ANIMAL_STEP_HEIGHT;
+    if (!hasAnimalSolidCollision(animal, steppedPosition)) {
+      animal.position.copy(steppedPosition);
+      continue;
+    }
+
     animal.position.set(prevX, prevY, prevZ);
     collided = true;
     break;
@@ -861,6 +871,62 @@ function randomNeuronSet() {
 
 function randomWeightSet() {
   return [Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1];
+}
+
+function createAnimalBars(typeName) {
+  const canvas = document.createElement('canvas');
+  canvas.width = ANIMAL_BAR_CANVAS_WIDTH;
+  canvas.height = ANIMAL_BAR_CANVAS_HEIGHT;
+  const context = canvas.getContext('2d');
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+  });
+
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(2.1, 1.05, 1);
+  sprite.position.y = 1.9;
+
+  const drawBar = (ctx, y, label, color, ratio) => {
+    const left = 28;
+    const width = ANIMAL_BAR_CANVAS_WIDTH - left - 6;
+    const height = 10;
+    const clampedRatio = THREE.MathUtils.clamp(ratio, 0, 1);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
+    ctx.fillRect(left, y, width, height);
+    ctx.fillStyle = color;
+    ctx.fillRect(left + 1, y + 1, (width - 2) * clampedRatio, height - 2);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.strokeRect(left, y, width, height);
+    ctx.fillStyle = '#f2f6ff';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.fillText(label, 4, y + 8.5);
+  };
+
+  const update = (animal, profile) => {
+    if (!context) return;
+    context.clearRect(0, 0, ANIMAL_BAR_CANVAS_WIDTH, ANIMAL_BAR_CANVAS_HEIGHT);
+    context.fillStyle = 'rgba(6, 12, 22, 0.82)';
+    context.fillRect(0, 0, ANIMAL_BAR_CANVAS_WIDTH, ANIMAL_BAR_CANVAS_HEIGHT);
+    context.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    context.strokeRect(0.5, 0.5, ANIMAL_BAR_CANVAS_WIDTH - 1, ANIMAL_BAR_CANVAS_HEIGHT - 1);
+
+    context.fillStyle = '#f2f6ff';
+    context.font = 'bold 10px sans-serif';
+    context.fillText(typeName, 4, 9);
+
+    drawBar(context, 14, 'HP', '#6cd96a', animal.health / animal.maxHealth);
+    drawBar(context, 28, 'HGR', '#f1b34b', 1 - animal.hunger / animal.maxHunger);
+    drawBar(context, 42, 'THR', '#53b5ff', 1 - animal.thirst / animal.maxThirst);
+    texture.needsUpdate = true;
+  };
+
+  return { sprite, texture, update };
 }
 
 function createAnimal(type, { x, y, z } = randomWorldGroundPoint(), inherited = null) {
@@ -879,8 +945,13 @@ function createAnimal(type, { x, y, z } = randomWorldGroundPoint(), inherited = 
     velocity: new THREE.Vector3(),
     heading: Math.random() * Math.PI * 2,
     energy: inherited?.energy ?? profile.maxEnergy * 0.72,
+    maxHealth: 100,
+    health: inherited?.health ?? 100,
+    maxHunger: 3,
     age: 0,
     hunger: 0,
+    maxThirst: 3,
+    thirst: 0,
     needs: {
       food: 0,
       safety: Math.random() * 0.3,
@@ -895,22 +966,26 @@ function createAnimal(type, { x, y, z } = randomWorldGroundPoint(), inherited = 
     new THREE.SphereGeometry(radius, 10, 10),
     new THREE.MeshStandardMaterial({ color: profile.color, roughness: 0.7, metalness: 0.02 }),
   );
+  const bars = createAnimalBars(profile.name);
+  mesh.add(bars.sprite);
   mesh.position.copy(animal.position);
   animalGroup.add(mesh);
 
   animals.push(animal);
-  animalMeshes.set(animal.id, mesh);
+  animalMeshes.set(animal.id, { mesh, bars });
   return animal;
 }
 
 function removeAnimal(animal) {
   const idx = animals.findIndex((entry) => entry.id === animal.id);
   if (idx >= 0) animals.splice(idx, 1);
-  const mesh = animalMeshes.get(animal.id);
-  if (mesh) {
-    animalGroup.remove(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  const animalVisual = animalMeshes.get(animal.id);
+  if (animalVisual) {
+    animalGroup.remove(animalVisual.mesh);
+    animalVisual.mesh.geometry.dispose();
+    animalVisual.mesh.material.dispose();
+    animalVisual.bars.texture.dispose();
+    animalVisual.bars.sprite.material.dispose();
     animalMeshes.delete(animal.id);
   }
 }
@@ -988,13 +1063,16 @@ function updateAnimals(dt) {
   for (const animal of animals) {
     const profile = ANIMAL_TYPES[animal.type];
     animal.age += dt;
-    animal.hunger = THREE.MathUtils.clamp(animal.hunger + dt * 0.22, 0, 3);
+    animal.hunger = THREE.MathUtils.clamp(animal.hunger + dt * 0.22, 0, animal.maxHunger);
+    animal.thirst = THREE.MathUtils.clamp(animal.thirst + dt * 0.32, 0, animal.maxThirst);
     animal.needs.food = animal.hunger;
     animal.needs.duplicate = THREE.MathUtils.clamp(animal.energy / profile.duplicationThreshold, 0, 1.5);
 
-    const energyDrain = (0.85 + animal.hunger * 0.5 + animal.weight * 0.003) * dt;
+    const energyDrain = (0.85 + animal.hunger * 0.5 + animal.thirst * 0.55 + animal.weight * 0.003) * dt;
     animal.energy -= energyDrain;
-    if (animal.energy <= 0 || animal.age > 500) {
+    const healthDrain = Math.max(0, animal.hunger - 1.6) * dt * 2.8 + Math.max(0, animal.thirst - 1.4) * dt * 3.6;
+    animal.health -= healthDrain;
+    if (animal.energy <= 0 || animal.health <= 0 || animal.age > 500) {
       toRemove.push(animal);
       continue;
     }
@@ -1038,6 +1116,8 @@ function updateAnimals(dt) {
       if (dist < animal.radius + target.radius + 0.2) {
         animal.energy = Math.min(profile.maxEnergy * 1.25, animal.energy + profile.foodGain);
         animal.hunger = Math.max(0, animal.hunger - 0.85);
+        animal.thirst = Math.max(0, animal.thirst - 0.35);
+        animal.health = Math.min(animal.maxHealth, animal.health + 10);
         toRemove.push(target);
       }
     } else if (!profile.prey && animal.needs.food > 0.4) {
@@ -1047,6 +1127,8 @@ function updateAnimals(dt) {
       if (getVoxelTypeAt(tx, topY, tz) === BLOCK_APPLE) {
         animal.energy = Math.min(profile.maxEnergy * 1.2, animal.energy + profile.foodGain);
         animal.hunger = Math.max(0, animal.hunger - 0.75);
+        animal.thirst = Math.max(0, animal.thirst - 0.28);
+        animal.health = Math.min(animal.maxHealth, animal.health + 6);
       }
     }
 
@@ -1054,10 +1136,13 @@ function updateAnimals(dt) {
       duplicateAnimal(animal);
     }
 
-    const mesh = animalMeshes.get(animal.id);
-    if (mesh) {
-      mesh.position.copy(animal.position);
-      mesh.scale.setScalar(1 + animal.needs.food * 0.1);
+    const animalVisual = animalMeshes.get(animal.id);
+    if (animalVisual) {
+      animalVisual.mesh.position.copy(animal.position);
+      animalVisual.mesh.scale.setScalar(1 + animal.needs.food * 0.1);
+      animalVisual.bars.update(animal, profile);
+      animalVisual.bars.sprite.position.y = animal.radius + 1.45;
+      animalVisual.bars.sprite.quaternion.copy(camera.quaternion);
     }
   }
 
