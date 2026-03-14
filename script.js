@@ -148,7 +148,7 @@ const ANIMAL_TYPES = Object.freeze({
     name: 'Grazer',
     color: '#b9d981',
     baseWeight: 24,
-    radius: 0.45,
+    radius: 0.72,
     speed: 3.4,
     maxEnergy: 120,
     duplicationThreshold: 98,
@@ -159,7 +159,7 @@ const ANIMAL_TYPES = Object.freeze({
     name: 'Hunter',
     color: '#d4765f',
     baseWeight: 42,
-    radius: 0.52,
+    radius: 0.86,
     speed: 4.2,
     maxEnergy: 140,
     duplicationThreshold: 112,
@@ -796,7 +796,7 @@ function randomWorldGroundPoint() {
 }
 
 function clampAnimalToGround(animal) {
-  const groundY = terrainHeight(Math.floor(animal.position.x), Math.floor(animal.position.z)) + animal.radius;
+  const groundY = terrainHeight(Math.floor(animal.position.x), Math.floor(animal.position.z)) + animal.radius + 1;
   animal.position.y = groundY;
 }
 
